@@ -20,24 +20,23 @@ project is practicing SQL directly rather than hiding it behind an ORM.
 
 ## Setup
 
+Install dependencies
+
 ```bash
 npm install
-cp .env.example .env
+```
+
+Create `.env` file
+
+```bash
+npm install
 ```
 
 Edit `.env` and set `DATABASE_URL` to your Supabase project's **pooled**
-connection string (port 6543, via Supavisor/pgbouncer). `.env.example` has the
-exact format and a commented-out `psql` command for the next step.
-
-The database itself isn't managed by any migration tool — the schema lives in
-`../clinic_database_dump.sql` at the repo root. Load it into your Supabase
-project once (via the SQL editor, or `psql -f clinic_database_dump.sql`)
-before starting the server.
+connection string (port 6543, via Supavisor/pgbouncer).
 
 ```bash
 npm run dev     # tsx watch src/index.ts — restarts on file changes
-npm run build   # tsc -p tsconfig.json  → dist/
-npm run start   # node dist/index.js    — runs the build output
 ```
 
 Server listens on `PORT` from `.env` (default `4000`).
