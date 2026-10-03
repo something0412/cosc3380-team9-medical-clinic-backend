@@ -29,7 +29,7 @@ npm install
 Create `.env` file
 
 ```bash
-npm install
+touch .env
 ```
 
 Edit `.env` and set `DATABASE_URL` to your Supabase project's **pooled**
