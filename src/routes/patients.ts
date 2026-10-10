@@ -15,6 +15,8 @@ export const patientsRouter = Router();
 // in the SELECT itself so the JSON this API returns matches normal
 // JS/TS naming — that way the translation happens once, here, instead of
 // every frontend component having to deal with snake_case field names.
+
+//get all patient
 patientsRouter.get("/api/patients", async (_req, res) => {
   const result = await pool.query(`
     SELECT
@@ -30,4 +32,46 @@ patientsRouter.get("/api/patients", async (_req, res) => {
   `);
 
   res.json(result.rows);
+});
+
+
+//add a new patient
+patientsRouter.post("/api/patients", async (req, res) => {
+    const {
+        firstName,
+        lastName,
+        dob,
+        gender,
+        phone,
+        email,
+        address
+    } = req.body;
+    const result = await pool.query(
+        `
+        INSERT INTO patient
+            (first_name, last_name, dob, gender, phone, email, address, is_active)
+        VALUES
+            ($1, $2, $3, $4, $5, $6, $7, true)
+        RETURNING
+            patient_id AS "patientId",
+            first_name AS "firstName",
+            last_name AS "lastName",
+            dob,
+            gender,
+            phone,
+            email,
+            address,
+            is_active AS "isActive"
+        `,
+        [
+            firstName,
+            lastName,
+            dob,
+            gender || null,
+            phone,
+            email || null,
+            address || null
+        ]
+    );
+    res.status(201).json(result.rows[0]);
 });
