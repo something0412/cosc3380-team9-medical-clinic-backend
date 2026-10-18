@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { pool } from "../lib/db.js";
 
-export const patientRouter = Router();
+export const patientsRouter = Router();
 
 // No controllers folder: for a learning project this small, splitting
 // "route" and "controller" into two files per entity was extra
@@ -18,7 +18,7 @@ export const patientRouter = Router();
 
 
 //get all patient
-patientRouter.get("/api/patients", async (_req, res) => {
+patientsRouter.get("/api/patients", async (_req, res) => {
     const result = await pool.query(`
         SELECT
             patient_id AS "patientId",
@@ -37,7 +37,7 @@ patientRouter.get("/api/patients", async (_req, res) => {
 
 
 //add a new patient
-patientRouter.post("/api/patients", async (req, res) => {
+patientsRouter.post("/api/patients", async (req, res) => {
     const {
         firstName,
         lastName,
@@ -55,6 +55,11 @@ patientRouter.post("/api/patients", async (req, res) => {
         typeof phone !== "string" || !phone.trim()
     ) {
         res.status(400).json({ error: "Valid first name, last name, DOB, and phone are required" });
+        return;
+    }
+
+    if ([gender, email, address].some((value) => value != null && typeof value !== "string")) {
+        res.status(400).json({ error: "Invalid patient information" });
         return;
     }
 
@@ -90,12 +95,45 @@ patientRouter.post("/api/patients", async (req, res) => {
 });
 
 
-// Check that the patient is logged in
-patientRouter.use("/api/patient", (_req, res, next) => {
-    const patientId = res.locals.patientId;
+// Previous development-only approach (no longer used):
+// Check that the patient is logged in. For now, accept the patient ID from the
+// Authorization header or a request header/body/query fallback so the patient
+// routes can be exercised while the app is still using simple request-local auth.
+// The patient ID now comes from :id and must match verified login information.
+function parsePositiveInt(value: unknown): number | null {
+    if (typeof value === "number") {
+        return Number.isSafeInteger(value) && value > 0 ? value : null;
+    }
 
-    if (!Number.isSafeInteger(patientId) || patientId <= 0) {
+    if (typeof value === "string") {
+        const trimmed = value.trim();
+        if (!/^[1-9]\d*$/.test(trimmed)) return null;
+
+        const parsed = Number(trimmed);
+        return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+    }
+
+    return null;
+}
+
+patientsRouter.use("/api/patient/:id", (req, res, next) => {
+    const patientId = parsePositiveInt(req.params.id);
+
+    if (patientId === null) {
+        res.status(400).json({ error: "Invalid patient ID" });
+        return;
+    }
+
+    // This must be set by verified login middleware before these routes.
+    const loggedInPatientId = res.locals.patientId;
+
+    if (!Number.isSafeInteger(loggedInPatientId) || loggedInPatientId <= 0) {
         res.status(401).json({ error: "Patient login required" });
+        return;
+    }
+
+    if (loggedInPatientId !== patientId) {
+        res.status(403).json({ error: "Access denied" });
         return;
     }
 
@@ -104,8 +142,8 @@ patientRouter.use("/api/patient", (_req, res, next) => {
 
 
 // Get patient profile
-patientRouter.get("/api/patient/profile", async (_req, res) => {
-    const patientId = res.locals.patientId;
+patientsRouter.get("/api/patient/:id/profile", async (req, res) => {
+    const patientId = Number(req.params.id);
 
     const result = await pool.query(
         `
@@ -135,8 +173,8 @@ patientRouter.get("/api/patient/profile", async (_req, res) => {
 
 
 // Get patient appointments
-patientRouter.get("/api/patient/appointments", async (_req, res) => {
-    const patientId = res.locals.patientId;
+patientsRouter.get("/api/patient/:id/appointments", async (req, res) => {
+    const patientId = Number(req.params.id);
 
     const result = await pool.query(
         `
@@ -162,8 +200,8 @@ patientRouter.get("/api/patient/appointments", async (_req, res) => {
 
 
 // Get patient forms
-patientRouter.get("/api/patient/forms", async (_req, res) => {
-    const patientId = res.locals.patientId;
+patientsRouter.get("/api/patient/:id/forms", async (req, res) => {
+    const patientId = Number(req.params.id);
 
     const result = await pool.query(
         `
@@ -196,8 +234,8 @@ patientRouter.get("/api/patient/forms", async (_req, res) => {
 
 
 // Get patient billing information
-patientRouter.get("/api/patient/billing", async (_req, res) => {
-    const patientId = res.locals.patientId;
+patientsRouter.get("/api/patient/:id/billing", async (req, res) => {
+    const patientId = Number(req.params.id);
 
     const invoices = await pool.query(
         `
@@ -238,8 +276,8 @@ patientRouter.get("/api/patient/billing", async (_req, res) => {
 
 
 // Get patient medical records
-patientRouter.get("/api/patient/records", async (_req, res) => {
-    const patientId = res.locals.patientId;
+patientsRouter.get("/api/patient/:id/records", async (req, res) => {
+    const patientId = Number(req.params.id);
 
     const visits = await pool.query(
         `
@@ -297,8 +335,8 @@ patientRouter.get("/api/patient/records", async (_req, res) => {
 
 
 // Get patient dashboard summary
-patientRouter.get("/api/patient/dashboard", async (_req, res) => {
-    const patientId = res.locals.patientId;
+patientsRouter.get("/api/patient/:id/dashboard", async (req, res) => {
+    const patientId = Number(req.params.id);
 
     const appointments = await pool.query(
         `
