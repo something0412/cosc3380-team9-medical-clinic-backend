@@ -12,6 +12,8 @@ declare module "express-session" {
     role?: "patient" | "doctor" | "admin" | "staff";
     patientId?: number;
     employeeId?: number;
+    firstName?: string;
+    lastName?: string;
   }
 }
 
@@ -35,17 +37,21 @@ const staffLoginSchema = z.object({
   password: z.string().min(1),
 });
 
-// Create a verified session after checking the user's credentials.
+// start session
 async function startSession(
   req: Request,
   role: "patient" | "doctor" | "admin" | "staff",
-  id: number
+  id: number,
+  firstName: string,
+  lastName: string
 ) {
   await new Promise<void>((resolve, reject) => {
     req.session.regenerate((error) => {
       if (error) return reject(error);
 
       req.session.role = role;
+      req.session.firstName = firstName;
+      req.session.lastName = lastName;
       if (role === "patient") {
         req.session.patientId = id;
       } else {
@@ -60,7 +66,7 @@ async function startSession(
   });
 }
 
-// Create account
+// create account
 authRouter.post("/api/auth/patient/signup", async (req, res) => {
   const body = signupSchema.parse(req.body);
   const passwordHash = await hashPassword(body.password);
@@ -103,12 +109,11 @@ authRouter.post("/api/auth/patient/signup", async (req, res) => {
     client.release();
   }
 
-  // Signup also opens the portal, so it needs a session like normal login.
-  await startSession(req, "patient", createdPatient.patientId);
+  await startSession(req, "patient", createdPatient.patientId, createdPatient.firstName, createdPatient.lastName);
   res.status(201).json(createdPatient);
 });
 
-// Patient login
+// patient login
 authRouter.post("/api/auth/patient/login", async (req, res) => {
   const { patientId, email, password } = patientLoginSchema.parse(req.body);
 
@@ -135,13 +140,13 @@ authRouter.post("/api/auth/patient/login", async (req, res) => {
     throw new HttpError(401, "Invalid patient number, email, or password");
   }
 
-  await startSession(req, "patient", row.patientId);
+  await startSession(req, "patient", row.patientId, row.firstName, row.lastName);
 
   const { passwordHash: _, ...patient } = row;
   res.json(patient);
 });
 
-// Staff login
+// staff login
 authRouter.post("/api/auth/staff/login", async (req, res) => {
   const { employeeId, password } = staffLoginSchema.parse(req.body);
 
@@ -174,13 +179,23 @@ authRouter.post("/api/auth/staff/login", async (req, res) => {
     throw new HttpError(401, "Invalid staff ID or password");
   }
 
-  await startSession(req, row.role, row.employeeId);
+  await startSession(req, row.role, row.employeeId, row.firstName, row.lastName);
 
   const { passwordHash: _, ...employee } = row;
   res.json(employee);
 });
 
-// Log out and invalidate the server session.
+// current user
+authRouter.get("/api/auth/me", (req, res) => {
+  const { role, patientId, employeeId, firstName, lastName } = req.session;
+  if (!role) {
+    res.status(401).json({ error: "Not logged in" });
+    return;
+  }
+  res.json({ role, id: role === "patient" ? patientId : employeeId, firstName, lastName });
+});
+
+// log out
 authRouter.post("/api/auth/logout", (req, res, next) => {
   req.session.destroy((error) => {
     if (error) return next(error);

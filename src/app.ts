@@ -8,7 +8,9 @@ import { randomBytes } from "node:crypto";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { authRouter } from "./routes/auth.js";
 import { healthRouter } from "./routes/health.js";
+import { patientProfileRouter } from "./routes/patientProfile.js";
 import { patientsRouter } from "./routes/patients.js";
+import { staffProfileRouter } from "./routes/staffProfile.js";
 import { templateRouter } from "./routes/template.js";
 
 export const app = express();
@@ -24,14 +26,13 @@ app.use(morgan("dev"));
 
 app.use(express.json());
 
-// A random secret is fine for local development but resets logins on restart.
-// Set a strong SESSION_SECRET in .env for stable sessions and all deployments.
+// session secret
 const secret = process.env.SESSION_SECRET ?? randomBytes(32).toString("hex");
 if (process.env.NODE_ENV === "production" && !process.env.SESSION_SECRET) {
   throw new Error("SESSION_SECRET is required in production");
 }
 
-// MemoryStore is for local development only. Use a persistent store in production.
+// sessions
 app.use(session({
   secret,
   resave: false,
@@ -44,10 +45,37 @@ app.use(session({
   },
 }));
 
-// Pass the verified server-side patient session to the existing patient routes.
-app.use((req, res, next) => {
-  if (req.session.role === "patient" && Number.isSafeInteger(req.session.patientId)) {
-    res.locals.patientId = req.session.patientId;
+// patient portal: only the logged-in patient
+app.use("/api/patient/:id", (req, res, next) => {
+  if (req.session.role !== "patient") {
+    res.status(401).json({ error: "Patient login required" });
+    return;
+  }
+  if (req.session.patientId !== Number(req.params.id)) {
+    res.status(403).json({ error: "Access denied" });
+    return;
+  }
+  next();
+});
+
+// staff profile: only the logged-in staff member
+app.use("/api/staff/:id", (req, res, next) => {
+  if (!req.session.role || req.session.role === "patient") {
+    res.status(401).json({ error: "Staff login required" });
+    return;
+  }
+  if (req.session.employeeId !== Number(req.params.id)) {
+    res.status(403).json({ error: "Access denied" });
+    return;
+  }
+  next();
+});
+
+// patient list and registration: staff only
+app.use("/api/patients", (req, res, next) => {
+  if (!req.session.role || req.session.role === "patient") {
+    res.status(401).json({ error: "Staff login required" });
+    return;
   }
   next();
 });
@@ -55,6 +83,8 @@ app.use((req, res, next) => {
 app.use(healthRouter);
 app.use(authRouter);
 app.use(patientsRouter);
+app.use(patientProfileRouter);
+app.use(staffProfileRouter);
 app.use(templateRouter);
 
 app.use(notFoundHandler);

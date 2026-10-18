@@ -3,21 +3,7 @@ import { pool } from "../lib/db.js";
 
 export const patientsRouter = Router();
 
-// No controllers folder: for a learning project this small, splitting
-// "route" and "controller" into two files per entity was extra
-// indirection without enough payoff. Each route handler just writes its
-// own SQL and shapes its own response — copy this file's shape
-// (Router + pool.query + res.json) for new entities (appointments,
-// doctors, etc.) instead of creating a controllers/*.ts file.
-//
-// Columns in the real `patient` table (see clinic_database_dump.sql) are
-// snake_case, matching normal SQL convention. We alias them to camelCase
-// in the SELECT itself so the JSON this API returns matches normal
-// JS/TS naming — that way the translation happens once, here, instead of
-// every frontend component having to deal with snake_case field names.
-
-
-//get all patient
+// get all patients
 patientsRouter.get("/api/patients", async (_req, res) => {
     const result = await pool.query(`
         SELECT
@@ -36,7 +22,7 @@ patientsRouter.get("/api/patients", async (_req, res) => {
 });
 
 
-//add a new patient
+// add a new patient
 patientsRouter.post("/api/patients", async (req, res) => {
     const {
         firstName,
@@ -95,84 +81,7 @@ patientsRouter.post("/api/patients", async (req, res) => {
 });
 
 
-// Previous development-only approach (no longer used):
-// Check that the patient is logged in. For now, accept the patient ID from the
-// Authorization header or a request header/body/query fallback so the patient
-// routes can be exercised while the app is still using simple request-local auth.
-// The patient ID now comes from :id and must match verified login information.
-function parsePositiveInt(value: unknown): number | null {
-    if (typeof value === "number") {
-        return Number.isSafeInteger(value) && value > 0 ? value : null;
-    }
-
-    if (typeof value === "string") {
-        const trimmed = value.trim();
-        if (!/^[1-9]\d*$/.test(trimmed)) return null;
-
-        const parsed = Number(trimmed);
-        return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
-    }
-
-    return null;
-}
-
-patientsRouter.use("/api/patient/:id", (req, res, next) => {
-    const patientId = parsePositiveInt(req.params.id);
-
-    if (patientId === null) {
-        res.status(400).json({ error: "Invalid patient ID" });
-        return;
-    }
-
-    // This must be set by verified login middleware before these routes.
-    const loggedInPatientId = res.locals.patientId;
-
-    if (!Number.isSafeInteger(loggedInPatientId) || loggedInPatientId <= 0) {
-        res.status(401).json({ error: "Patient login required" });
-        return;
-    }
-
-    if (loggedInPatientId !== patientId) {
-        res.status(403).json({ error: "Access denied" });
-        return;
-    }
-
-    next();
-});
-
-
-// Get patient profile
-patientsRouter.get("/api/patient/:id/profile", async (req, res) => {
-    const patientId = Number(req.params.id);
-
-    const result = await pool.query(
-        `
-        SELECT
-            patient_id AS "patientId",
-            first_name AS "firstName",
-            last_name AS "lastName",
-            dob,
-            gender,
-            phone,
-            email,
-            address,
-            is_active AS "isActive"
-        FROM patient
-        WHERE patient_id = $1
-        `,
-        [patientId]
-    );
-
-    if (result.rows.length === 0) {
-        res.status(404).json({ error: "Patient not found" });
-        return;
-    }
-
-    res.json(result.rows[0]);
-});
-
-
-// Get patient appointments
+// get patient appointments
 patientsRouter.get("/api/patient/:id/appointments", async (req, res) => {
     const patientId = Number(req.params.id);
 
@@ -199,7 +108,7 @@ patientsRouter.get("/api/patient/:id/appointments", async (req, res) => {
 });
 
 
-// Get patient forms
+// get patient forms
 patientsRouter.get("/api/patient/:id/forms", async (req, res) => {
     const patientId = Number(req.params.id);
 
@@ -233,7 +142,7 @@ patientsRouter.get("/api/patient/:id/forms", async (req, res) => {
 });
 
 
-// Get patient billing information
+// get patient billing information
 patientsRouter.get("/api/patient/:id/billing", async (req, res) => {
     const patientId = Number(req.params.id);
 
@@ -275,7 +184,7 @@ patientsRouter.get("/api/patient/:id/billing", async (req, res) => {
 });
 
 
-// Get patient medical records
+// get patient medical records
 patientsRouter.get("/api/patient/:id/records", async (req, res) => {
     const patientId = Number(req.params.id);
 
@@ -334,7 +243,7 @@ patientsRouter.get("/api/patient/:id/records", async (req, res) => {
 });
 
 
-// Get patient dashboard summary
+// get patient dashboard summary
 patientsRouter.get("/api/patient/:id/dashboard", async (req, res) => {
     const patientId = Number(req.params.id);
 
