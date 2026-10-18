@@ -7,7 +7,7 @@ import helmet from "helmet";
 import morgan from "morgan";
 
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
-
+import { authRouter } from "./routes/auth.js";
 import { healthRouter } from "./routes/health.js";
 
 import { patientRouter } from "./routes/patients.js";
@@ -24,6 +24,7 @@ app.use(morgan("dev"));
 
 app.use(express.json());
 
+app.use(authRouter);
 app.use(healthRouter);
 
 app.use(patientRouter);
