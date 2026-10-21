@@ -57,7 +57,7 @@ src/
     auth.ts             # patient signup/login, staff login
     billing.ts          # billing summary, invoices, payments
     health.ts           # GET /api/health
-    intake.ts           # emergency contacts, insurance, forms, primary doctor
+    intake.ts           # emergency contacts, insurance, forms
     patients.ts         # search, registration, profile, chart, vitals
     template.ts         # GET /api/template
 migrations/             # SQL to run on top of clinic_database_dump.sql
@@ -84,7 +84,7 @@ nurses are employees with a row in `nurse`.
 | ------ | ---- | ------------ |
 | GET | `/api/patients?search=&dob=&phone=` | Global patient search; every filter optional. |
 | POST | `/api/patients` | Registers a patient, plus optional emergency contact, insurance and portal login, in one transaction. Receptionists only. |
-| GET | `/api/patients/:patientId` | Profile: demographics, emergency contacts, insurance, primary doctor, portal-account flag. |
+| GET | `/api/patients/:patientId` | Profile: demographics, emergency contacts, insurance, portal-account flag. |
 | PUT | `/api/patients/:patientId` | Edits demographics (keeps the portal username in sync with the email). Receptionists only. |
 | POST | `/api/patients/:patientId/credentials` | Creates a portal login (username = email). Receptionists only. |
 | GET | `/api/patients/:patientId/chart` | Nurse chart: patient info, active allergies, vitals (newest first), current meds (home + prescribed). |
@@ -102,7 +102,6 @@ nurses are employees with a row in `nurse`.
 | GET | `/api/form-types` | Active form types. |
 | GET | `/api/patients/:patientId/forms` | Every form type with this patient's status for it. |
 | PATCH | `/api/patients/:patientId/forms/:formTypeId/complete` | Marks a form completed. |
-| PUT | `/api/patients/:patientId/primary-doctor` | Sets the patient's primary doctor. |
 
 **Scheduling** (`routes/appointments.ts`, writes are receptionists only, own office)
 

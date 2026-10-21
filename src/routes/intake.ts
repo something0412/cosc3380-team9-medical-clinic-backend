@@ -5,8 +5,7 @@ import { requireStaffType } from "../lib/staff.js";
 import { HttpError } from "../middleware/errorHandler.js";
 
 // Front-desk intake for an existing patient: emergency contacts,
-// insurance, intake forms and primary doctor. Every write is
-// receptionists only.
+// insurance and intake forms. Every write is receptionists only.
 export const intakeRouter = Router();
 
 const id = z.coerce.number().int().positive();
@@ -271,44 +270,4 @@ intakeRouter.patch("/api/patients/:patientId/forms/:formTypeId/complete", async 
   });
 
   res.json({ patientId, formTypeId, status: "Completed" });
-});
-
-// ---------------------------------------------------------------------------
-// Primary care doctor (patient_doctor; one primary per patient)
-// ---------------------------------------------------------------------------
-
-const primaryDoctorSchema = z.object({
-  employeeId: z.number().int().positive(),
-  doctorId: z.number().int().positive(),
-});
-
-// Un-set the old primary, then upsert this doctor as primary. The
-// (patient_id, doctor_id) primary key means a doctor the patient saw
-// before already has a row; ON CONFLICT reuses it instead of failing.
-intakeRouter.put("/api/patients/:patientId/primary-doctor", async (req, res) => {
-  const patientId = id.parse(req.params.patientId);
-  const body = primaryDoctorSchema.parse(req.body);
-  await requireStaffType(body.employeeId, "receptionist", "assign doctors");
-
-  await withTransaction(async (client) => {
-    await client.query(
-      `UPDATE patient_doctor SET is_primary = false WHERE patient_id = $1 AND doctor_id <> $2`,
-      [patientId, body.doctorId]
-    );
-    await client.query(
-      `
-      INSERT INTO patient_doctor (patient_id, doctor_id, is_primary)
-      VALUES ($1, $2, true)
-      ON CONFLICT (patient_id, doctor_id) DO UPDATE
-      SET is_primary = true,
-          is_active = true,
-          -- Keep the original date if they were already the primary doctor.
-          assigned_date = CASE WHEN patient_doctor.is_primary AND patient_doctor.is_active
-                               THEN patient_doctor.assigned_date ELSE CURRENT_DATE END
-      `,
-      [patientId, body.doctorId]
-    );
-  });
-
-  res.json({ patientId, doctorId: body.doctorId });
 });

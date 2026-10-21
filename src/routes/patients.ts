@@ -208,7 +208,7 @@ patientsRouter.get("/api/patients/:patientId", async (req, res) => {
     throw new HttpError(404, "Patient not found");
   }
 
-  const [contacts, insurance, primaryDoctor] = await Promise.all([
+  const [contacts, insurance] = await Promise.all([
     pool.query(
       `
       SELECT
@@ -228,25 +228,12 @@ patientsRouter.get("/api/patients/:patientId", async (req, res) => {
       `SELECT provider, policy_number AS "policyNumber", status FROM insurance WHERE patient_id = $1`,
       [patientId]
     ),
-    pool.query(
-      `
-      SELECT
-        pd.doctor_id AS "doctorId",
-        'Dr. ' || e.first_name || ' ' || e.last_name AS name,
-        pd.assigned_date AS "assignedDate"
-      FROM patient_doctor pd
-      JOIN employee e ON e.employee_id = pd.doctor_id
-      WHERE pd.patient_id = $1 AND pd.is_primary AND pd.is_active
-      `,
-      [patientId]
-    ),
   ]);
 
   res.json({
     ...patient.rows[0],
     emergencyContacts: contacts.rows,
     insurance: insurance.rows[0] ?? null,
-    primaryDoctor: primaryDoctor.rows[0] ?? null,
   });
 });
 
