@@ -58,6 +58,7 @@ src/
     billing.ts          # billing summary, invoices, payments
     health.ts           # GET /api/health
     intake.ts           # emergency contacts, insurance, forms
+    nursing.ts          # allergies, home meds, visit notes, labs, supplies
     patients.ts         # search, registration, profile, chart, vitals
     template.ts         # GET /api/template
 migrations/             # SQL to run on top of clinic_database_dump.sql
@@ -102,6 +103,29 @@ nurses are employees with a row in `nurse`.
 | GET | `/api/form-types` | Active form types. |
 | GET | `/api/patients/:patientId/forms` | Every form type with this patient's status for it. |
 | PATCH | `/api/patients/:patientId/forms/:formTypeId/complete` | Marks a form completed. |
+
+**Nursing** (`routes/nursing.ts`, writes are nurses only; nurses never write prescriptions)
+
+| Method | Path | What it does |
+| ------ | ---- | ------------ |
+| GET | `/api/allergy-types` | Allergy types for the picker. |
+| POST | `/api/patients/:patientId/allergies` | Adds an allergy, or updates/reactivates the patient's existing row for that type. |
+| PATCH | `/api/allergies/:allergyId` | Changes reaction or severity. |
+| PATCH | `/api/allergies/:allergyId/deactivate` | Soft-deletes an allergy. |
+| GET | `/api/medications?search=` | Medication list for the home-medication picker. |
+| POST | `/api/patients/:patientId/home-medications` | Records a medication the patient already takes (picked or typed). |
+| PATCH | `/api/home-medications/:homeMedicationId` | Changes category, dosage or frequency. |
+| PATCH | `/api/home-medications/:homeMedicationId/deactivate` | Patient stopped taking it (soft delete). |
+| GET | `/api/appointments/:appointmentId/summary` | The visit's notes and diagnosis, or `null`. |
+| POST | `/api/appointments/:appointmentId/notes` | Appends a "[nurse, time]" note to `appointment_summary` (upsert; never overwrites). Own office only. |
+| GET | `/api/lab-test-types` | Lab tests and their cost. |
+| GET | `/api/patients/:patientId/lab-orders` | A patient's lab orders, newest first. |
+| POST | `/api/lab-orders` | Orders a test, optionally for one of the patient's visits (adds to that visit's invoice minimum). |
+| PATCH | `/api/lab-orders/:labOrderId` | Ordered → InProgress → Completed, or → Cancelled; records results. |
+| GET | `/api/office-supplies?officeId=` | Office stock with `lowStock` and `expiringSoon` (30 days) flags. |
+| POST | `/api/office-supplies/:officeSupplyId/use` | Takes stock out; one UPDATE checks and subtracts, so it can't go negative. Own office only. |
+| GET | `/api/supply-orders?officeId=` | The office's 20 most recent restock requests. |
+| POST | `/api/supply-orders` | Requests a restock for the nurse's office (Pending). |
 
 **Scheduling** (`routes/appointments.ts`, writes are receptionists only, own office)
 

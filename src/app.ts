@@ -8,6 +8,7 @@ import { authRouter } from "./routes/auth.js";
 import { billingRouter } from "./routes/billing.js";
 import { healthRouter } from "./routes/health.js";
 import { intakeRouter } from "./routes/intake.js";
+import { nursingRouter } from "./routes/nursing.js";
 import { patientsRouter } from "./routes/patients.js";
 import { templateRouter } from "./routes/template.js";
 
@@ -23,6 +24,7 @@ app.use(authRouter);
 app.use(billingRouter);
 app.use(healthRouter);
 app.use(intakeRouter);
+app.use(nursingRouter);
 app.use(patientsRouter);
 app.use(templateRouter);
 
