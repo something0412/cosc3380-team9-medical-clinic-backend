@@ -382,6 +382,7 @@ patientsRouter.get("/api/patients/:patientId/chart", async (req, res) => {
         hm.medication_name AS name,
         hm.dosage,
         hm.frequency AS directions,
+        hm.category,
         hm.start_date AS "startDate"
       FROM home_medication hm
       WHERE hm.patient_id = $1 AND hm.is_active
@@ -394,6 +395,7 @@ patientsRouter.get("/api/patients/:patientId/chart", async (req, res) => {
         m.name,
         pi.dosage,
         pi.instructions,
+        NULL,
         p.date_prescribed
       FROM prescription p
       JOIN prescription_item pi ON pi.prescription_id = p.prescription_id
