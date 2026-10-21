@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../lib/db.js";
 import { hashPassword, verifyPassword } from "../lib/password.js";
+import { STAFF_TYPE_SQL } from "../lib/staff.js";
 import { HttpError } from "../middleware/errorHandler.js";
 
 export const authRouter = Router();
@@ -111,6 +112,8 @@ authRouter.post("/api/auth/staff/login", async (req, res) => {
         WHEN t.type_name ILIKE 'admin%' THEN 'admin'
         ELSE 'staff'
       END AS role,
+      ${STAFF_TYPE_SQL} AS "staffType",
+      e.office_id AS "officeId",
       c.password_hash AS "passwordHash"
     FROM employee e
     JOIN employee_creds c ON c.employee_id = e.employee_id

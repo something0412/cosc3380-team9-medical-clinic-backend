@@ -26,6 +26,18 @@ export function errorHandler(
     return;
   }
 
+  // Postgres constraint violations are the client's fault, not a server
+  // crash: a duplicate unique value (23505) is a conflict, a missing
+  // foreign key row (23503) or failed CHECK (23514) is a bad request.
+  // `detail` is Postgres's own explanation, e.g.
+  // "Key (policy_number)=(ABC123) already exists."
+  const pgCode = (err as { code?: string }).code;
+  if (pgCode === "23505" || pgCode === "23503" || pgCode === "23514") {
+    const detail = (err as { detail?: string; message: string }).detail ?? (err as Error).message;
+    res.status(pgCode === "23505" ? 409 : 400).json({ error: detail });
+    return;
+  }
+
   const status = err instanceof HttpError ? err.status : 500;
   const message = err instanceof Error ? err.message : "Internal server error";
 
