@@ -1,0 +1,3 @@
+-- Fictional sample data for local development and demos.
+-- Never add real patient data or real passwords.
+-- Not applied automatically. Empty for now.
