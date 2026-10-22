@@ -41,6 +41,18 @@ npm run dev     # tsx watch src/index.ts — restarts on file changes
 
 Server listens on `PORT` from `.env` (default `4000`).
 
+## Database changes
+
+On top of `clinic_database_dump.sql`, run these once in the Supabase SQL editor:
+
+- `migrations/001_appointment_check_in.sql` — adds `checked_in_at` / `checked_out_at` to `appointment`
+- `migrations/002_patient_vitals.sql` — creates `patient_vitals`
+
+Starter data for testing (safe to run more than once):
+
+- `seeds/receptionist_nurse_starter_data.sql` — payment types, allergy types, forms, medications, supplies
+- `seeds/demo_doctor_schedule.sql` — shifts, time slots and a Mon–Fri schedule for each doctor
+
 ## Project layout
 
 ```text
@@ -48,126 +60,76 @@ src/
   index.ts              # starts the HTTP server
   app.ts                # builds the Express app: middleware + routers, in order
   config/env.ts          # validates process.env with zod
-  lib/db.ts             # the pg Pool every route queries through
-  lib/staff.ts          # nurse / receptionist checks (requireStaffType)
+  lib/db.ts             # the pg Pool every route queries through (+ withTransaction)
+  lib/staff.ts          # requireStaffType — is this employee a nurse / receptionist?
   middleware/
     errorHandler.ts     # HttpError class + notFoundHandler + errorHandler
   routes/
-    appointments.ts     # appointments, doctors, availability, booking, check-in/out
+    appointments.ts     # appointments, availability, booking, check-in/out
     auth.ts             # patient signup/login, staff login
-    billing.ts          # billing summary, invoices, payments
+    billing.ts          # invoices, payments, receipts
     health.ts           # GET /api/health
     intake.ts           # emergency contacts, insurance, forms
     nursing.ts          # allergies, home meds, visit notes, labs, supplies
-    patients.ts         # search, registration, profile, chart, vitals
+    patients.ts         # patients, chart, vitals
     template.ts         # GET /api/template
-migrations/             # SQL to run on top of clinic_database_dump.sql
+migrations/             # schema changes on top of the dump
+seeds/                  # starter data
 ```
 
 ## Current routes
 
-"Receptionists only" / "nurses only" routes take the acting employee's id in
-the body (`employeeId`, or `recordedByEmployeeId` for vitals) and check it
-with `requireStaffType` (`lib/staff.ts`), which also returns the employee's
-office. Receptionists are employees whose type name starts with "Reception";
-nurses are employees with a row in `nurse`.
-
-**General**
-
-| Method | Path | What it does |
-| ------ | ---- | ------------ |
-| GET | `/api/health` | Returns `{ status: "ok" }`. No DB access. |
-| GET | `/api/template` | Demo JSON payload. No DB access. Only proves the frontend can reach the backend. |
-
-**Patients** (`routes/patients.ts`)
-
-| Method | Path | What it does |
-| ------ | ---- | ------------ |
-| GET | `/api/patients?search=&dob=&phone=` | Global patient search; every filter optional. |
-| POST | `/api/patients` | Registers a patient, plus optional emergency contact, insurance and portal login, in one transaction. Receptionists only. |
-| GET | `/api/patients/:patientId` | Profile: demographics, emergency contacts, insurance, portal-account flag. |
-| PUT | `/api/patients/:patientId` | Edits demographics (keeps the portal username in sync with the email). Receptionists only. |
-| POST | `/api/patients/:patientId/credentials` | Creates a portal login (username = email). Receptionists only. |
-| GET | `/api/patients/:patientId/chart` | Nurse chart: patient info, active allergies, vitals (newest first), current meds (home + prescribed). |
-| POST | `/api/patients/:patientId/vitals` | Records vitals into `patient_vitals`. Body: `recordedByEmployeeId`, optional `appointmentId` (must be this patient's), `temperatureF`, `heartRateBpm`, `systolic` + `diastolic` (both or neither), `weightLbs`, `heightInches` (`null` = not taken, at least one required). Nurses only. |
-
-**Intake** (`routes/intake.ts`, writes are receptionists only)
-
-| Method | Path | What it does |
-| ------ | ---- | ------------ |
-| POST | `/api/patients/:patientId/emergency-contacts` | Adds a contact; the first one is always primary. |
-| PUT | `/api/emergency-contacts/:contactId` | Edits a contact; `isPrimary: true` makes it the only primary. |
-| PATCH | `/api/emergency-contacts/:contactId/deactivate` | Soft-deletes a contact (not the primary). |
-| PUT | `/api/patients/:patientId/insurance` | Adds or replaces the policy (upsert); a changed policy goes back to Pending. |
-| PATCH | `/api/patients/:patientId/insurance/status` | Sets Pending / Verified / Denied. |
-| GET | `/api/form-types` | Active form types. |
-| GET | `/api/patients/:patientId/forms` | Every form type with this patient's status for it. |
-| PATCH | `/api/patients/:patientId/forms/:formTypeId/complete` | Marks a form completed. |
-
-**Nursing** (`routes/nursing.ts`, writes are nurses only; nurses never write prescriptions)
-
-| Method | Path | What it does |
-| ------ | ---- | ------------ |
-| GET | `/api/allergy-types` | Allergy types for the picker. |
-| POST | `/api/patients/:patientId/allergies` | Adds an allergy, or updates/reactivates the patient's existing row for that type. |
-| PATCH | `/api/allergies/:allergyId` | Changes reaction or severity. |
-| PATCH | `/api/allergies/:allergyId/deactivate` | Soft-deletes an allergy. |
-| GET | `/api/medications?search=` | Medication list for the home-medication picker. |
-| POST | `/api/patients/:patientId/home-medications` | Records a medication the patient already takes (picked or typed). |
-| PATCH | `/api/home-medications/:homeMedicationId` | Changes category, dosage or frequency. |
-| PATCH | `/api/home-medications/:homeMedicationId/deactivate` | Patient stopped taking it (soft delete). |
-| GET | `/api/appointments/:appointmentId/summary` | The visit's notes and diagnosis, or `null`. |
-| POST | `/api/appointments/:appointmentId/notes` | Appends a "[nurse, time]" note to `appointment_summary` (upsert; never overwrites). Own office only. |
-| GET | `/api/lab-test-types` | Lab tests and their cost. |
-| GET | `/api/patients/:patientId/lab-orders` | A patient's lab orders, newest first. |
-| POST | `/api/lab-orders` | Orders a test, optionally for one of the patient's visits (adds to that visit's invoice minimum). |
-| PATCH | `/api/lab-orders/:labOrderId` | Ordered → InProgress → Completed, or → Cancelled; records results. |
-| GET | `/api/office-supplies?officeId=` | Office stock with `lowStock` and `expiringSoon` (30 days) flags. |
-| POST | `/api/office-supplies/:officeSupplyId/use` | Takes stock out; one UPDATE checks and subtracts, so it can't go negative. Own office only. |
-| GET | `/api/supply-orders?officeId=` | The office's 20 most recent restock requests. |
-| POST | `/api/supply-orders` | Requests a restock for the nurse's office (Pending). |
-
-**Scheduling** (`routes/appointments.ts`, writes are receptionists only, own office)
-
-| Method | Path | What it does |
-| ------ | ---- | ------------ |
-| GET | `/api/appointments?date=&officeId=` | A day's appointments with waiting-room state (`visitState`) and readiness flags. |
-| GET | `/api/specialties` | Active specialties and whether they need a referral. |
-| GET | `/api/doctors?specialtyId=` | Active doctors and their specialties. |
-| GET | `/api/availability?date=&officeId=&specialtyId=&doctorId=` | Open slots from `doctor_schedule` + `time_slot`, minus booked ones. |
-| GET | `/api/patients/:patientId/referrals?doctorId=&specialtyId=&date=` | Referrals valid for that booking. |
-| POST | `/api/appointments` | Books by phone; locks the doctor's schedule row so a slot can't be double-booked; enforces referrals. |
-| PATCH | `/api/appointments/:appointmentId/check-in` | Sets `checked_in_at` (day of the visit only). |
-| PATCH | `/api/appointments/:appointmentId/check-out` | Sets `checked_out_at` and status `Completed`. |
-| PATCH | `/api/appointments/:appointmentId/no-show` | Sets status `No Show`. |
-
-**Billing** (`routes/billing.ts`, writes are receptionists only)
-
-| Method | Path | What it does |
-| ------ | ---- | ------------ |
-| GET | `/api/appointments/:appointmentId/invoice-estimate` | $50 check-in fee + the visit's lab tests, itemized. |
-| POST | `/api/invoices` | Bills a completed visit; amount defaults to, and can't go below, the estimate; one invoice per visit (row lock). |
-| GET | `/api/invoices?officeId=&status=` | Office worklist (default: Pending) with balances. |
-| GET | `/api/patients/:patientId/billing` | A patient's insurance, invoices (paid and balance) and payments. |
-| GET | `/api/patients/:patientId/uninvoiced-appointments` | Completed visits with no invoice yet. |
-| GET | `/api/payment-types` | Payment methods. |
-| POST | `/api/invoices/:invoiceId/payments` | Records a payment (row lock, no overpaying); marks the invoice Paid when the balance hits 0. |
-| GET | `/api/payments/:paymentId/receipt` | Everything printed on a receipt. |
+| Method | Path             | What it does                                                                                       |
+| ------ | ---------------- | --------------------------------------------------------------------------------------------------- |
+| GET    | `/api/health`    | Returns `{ status: "ok" }`. No DB access.                                                            |
+| GET    | `/api/template`  | Returns a demo JSON payload with a timestamp. No DB access. Exists only to prove the frontend can reach the backend. |
+| GET    | `/api/patients`  | All patients (optional `?search=`, `?dob=`, `?phone=`).                                              |
+| POST   | `/api/patients`  | Register a patient (+ emergency contact, insurance, portal login).                                  |
+| GET    | `/api/patients/:id` | Patient profile.                                                                                 |
+| PUT    | `/api/patients/:id` | Edit patient details.                                                                            |
+| POST   | `/api/patients/:id/credentials` | Create a portal login.                                                               |
+| GET    | `/api/patients/:id/chart` | Nurse chart: allergies, vitals, medications.                                               |
+| POST   | `/api/patients/:id/vitals` | Record vitals.                                                                            |
+| POST   | `/api/patients/:id/emergency-contacts` | Add an emergency contact.                                                     |
+| PUT    | `/api/emergency-contacts/:id` | Edit a contact / make it primary.                                                      |
+| PATCH  | `/api/emergency-contacts/:id/deactivate` | Remove a contact.                                                           |
+| PUT    | `/api/patients/:id/insurance` | Add or update insurance.                                                               |
+| PATCH  | `/api/patients/:id/insurance/status` | Pending / Verified / Denied.                                                    |
+| GET    | `/api/form-types`, `/api/patients/:id/forms` | Intake forms and a patient's form status.                               |
+| PATCH  | `/api/patients/:id/forms/:formTypeId/complete` | Mark a form completed.                                                |
+| GET    | `/api/appointments?date=&officeId=` | A day's appointments.                                                           |
+| GET    | `/api/specialties`, `/api/doctors` | Lists for booking.                                                               |
+| GET    | `/api/availability?date=&officeId=&specialtyId=` | Open time slots.                                                   |
+| GET    | `/api/patients/:id/referrals` | Referrals that allow a booking.                                                        |
+| POST   | `/api/appointments` | Book an appointment.                                                                             |
+| PATCH  | `/api/appointments/:id/check-in`, `/check-out`, `/no-show` | Front desk status changes.                                |
+| GET    | `/api/appointments/:id/invoice-estimate` | $50 check-in fee + lab tests.                                               |
+| GET    | `/api/invoices?officeId=` | Unpaid invoices for an office.                                                             |
+| POST   | `/api/invoices` | Create an invoice for a completed visit.                                                             |
+| GET    | `/api/patients/:id/billing` | A patient's invoices and payments.                                                       |
+| GET    | `/api/patients/:id/uninvoiced-appointments` | Completed visits not billed yet.                                         |
+| GET    | `/api/payment-types` | Payment methods.                                                                                |
+| POST   | `/api/invoices/:id/payments` | Record a payment.                                                                       |
+| GET    | `/api/payments/:id/receipt` | Receipt data.                                                                            |
+| GET    | `/api/allergy-types`, `/api/medications`, `/api/lab-test-types` | Lists for the nurse forms.                          |
+| POST   | `/api/patients/:id/allergies` | Add an allergy.                                                                        |
+| PATCH  | `/api/allergies/:id`, `/api/allergies/:id/deactivate` | Edit / remove an allergy.                                      |
+| POST   | `/api/patients/:id/home-medications` | Record a home medication.                                                       |
+| PATCH  | `/api/home-medications/:id`, `/deactivate` | Edit / stop a home medication.                                            |
+| GET    | `/api/appointments/:id/summary` | Visit notes.                                                                         |
+| POST   | `/api/appointments/:id/notes` | Add a visit note.                                                                      |
+| GET    | `/api/patients/:id/lab-orders` | A patient's lab orders.                                                               |
+| POST   | `/api/lab-orders` | Order a lab test.                                                                                  |
+| PATCH  | `/api/lab-orders/:id` | Update lab status / results.                                                                   |
+| GET    | `/api/office-supplies?officeId=`, `/api/supply-orders?officeId=` | Office stock and restock requests.                 |
+| POST   | `/api/office-supplies/:id/use` | Use supplies.                                                                         |
+| POST   | `/api/supply-orders` | Request a restock.                                                                              |
 
 All routes are prefixed with `/api` — that prefix is set inside each route
 file itself (`router.get("/api/...")`), not globally in `app.ts`.
 
-## Migrations
-
-Run these once, in order, in the Supabase SQL editor after loading the dump:
-
-1. `001_appointment_check_in.sql` adds `checked_in_at`/`checked_out_at` to
-   `appointment` (the only change to the original schema).
-2. `002_patient_vitals.sql` creates the `patient_vitals` table.
-
-The check-in and vitals routes fail until these are applied. Double-booking
-and one-invoice-per-visit are enforced in the routes' SQL (row locks inside
-transactions), not by the schema.
+Routes that change data for nurses or receptionists take the staff member's
+`employeeId` in the body and check it with `requireStaffType` (`lib/staff.ts`).
 
 ## How to add a new route (e.g. appointments)
 
