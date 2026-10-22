@@ -7,6 +7,7 @@ This folder contains the SQL files used to manage the Medical Clinic database. T
 - `schema.sql` — Complete database structure, including tables, relationships, and constraints.
 - `seed.sql` — Sample data for development and testing.
 - `migrations/` — SQL files for tracking future database changes.
+- `seeds/` — starter data for the receptionist, billing and nurse pages.
 
 Changes to these files do not automatically update Supabase. Database changes must be applied separately.
 

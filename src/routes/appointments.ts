@@ -18,7 +18,7 @@ const today = () => new Date().toLocaleDateString("en-CA");
 //   browser reads it as clinic-local time.
 // - visitState is the waiting-room state, derived from the check-in
 //   columns plus appointment_summary (a nurse's triage note means the
-//   patient is with the nurse). See migrations/001_appointment_check_in.sql.
+//   patient is with the nurse). See database/migrations/001_appointment_check_in.sql.
 // - The last three columns are readiness flags for the front desk and
 //   nurses: required forms not completed, insurance status, and whether
 //   the patient has a severe allergy.

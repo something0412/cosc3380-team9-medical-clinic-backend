@@ -43,15 +43,15 @@ Server listens on `PORT` from `.env` (default `4000`).
 
 ## Database changes
 
-On top of `clinic_database_dump.sql`, run these once in the Supabase SQL editor:
+On top of `database/schema.sql`, run these once in the Supabase SQL editor:
 
-- `migrations/001_appointment_check_in.sql` — adds `checked_in_at` / `checked_out_at` to `appointment`
-- `migrations/002_patient_vitals.sql` — creates `patient_vitals`
+- `database/migrations/001_appointment_check_in.sql` — adds `checked_in_at` / `checked_out_at` to `appointment`
+- `database/migrations/002_patient_vitals.sql` — creates `patient_vitals`
 
 Starter data for testing (safe to run more than once):
 
-- `seeds/receptionist_nurse_starter_data.sql` — payment types, allergy types, forms, medications, supplies
-- `seeds/demo_doctor_schedule.sql` — shifts, time slots and a Mon–Fri schedule for each doctor
+- `database/seeds/receptionist_nurse_starter_data.sql` — payment types, allergy types, forms, medications, supplies
+- `database/seeds/demo_doctor_schedule.sql` — shifts, time slots and a Mon–Fri schedule for each doctor
 
 ## Project layout
 
@@ -73,8 +73,7 @@ src/
     nursing.ts          # allergies, home meds, visit notes, labs, supplies
     patients.ts         # patients, chart, vitals
     template.ts         # GET /api/template
-migrations/             # schema changes on top of the dump
-seeds/                  # starter data
+database/               # schema snapshot, migrations, seed and starter data
 ```
 
 ## Current routes
