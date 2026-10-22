@@ -11,6 +11,7 @@ Backend tests that run the real Express app against a local PostgreSQL test data
 - `admin/offices.test.ts` — office directory, create/edit, validation, and activation rules.
 - `admin/specialties.test.ts` — specialty directory, create/edit, referral rule, and activation rules.
 - `admin/schedules.test.ts` — doctor schedules, shifts, time slots, and booked-appointment protection.
+- `admin/integration.test.ts` — workflows across features: setting up a doctor's schedule from scratch, deactivation dependencies, login lifecycle, appointment protection, and data integrity.
 
 ## Setup
 
