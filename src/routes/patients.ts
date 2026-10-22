@@ -218,7 +218,7 @@ patientsRouter.get("/api/patients/:patientId", async (req, res) => {
         first_name AS "firstName",
         last_name AS "lastName",
         relationship,
-        phone_number AS phone,
+        phone_number AS "phoneNumber",
         is_primary AS "isPrimary"
       FROM emergency_contact
       WHERE patient_id = $1 AND is_active

@@ -25,7 +25,7 @@ const contactSchema = z.object({
   firstName: z.string().trim().min(1),
   lastName: z.string().trim().min(1),
   relationship: z.string().trim().min(1),
-  phone: z.string().trim().min(1),
+  phoneNumber: z.string().trim().min(1),
   isPrimary: z.boolean().default(false),
 });
 
@@ -51,7 +51,7 @@ intakeRouter.post("/api/patients/:patientId/emergency-contacts", async (req, res
       VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING emergency_contact_id AS "emergencyContactId"
       `,
-      [patientId, body.firstName, body.lastName, body.relationship, body.phone, isPrimary]
+      [patientId, body.firstName, body.lastName, body.relationship, body.phoneNumber, isPrimary]
     );
     return result.rows[0];
   });
@@ -74,7 +74,7 @@ intakeRouter.put("/api/emergency-contacts/:contactId", async (req, res) => {
       WHERE emergency_contact_id = $1 AND is_active
       RETURNING patient_id AS "patientId"
       `,
-      [contactId, body.firstName, body.lastName, body.relationship, body.phone]
+      [contactId, body.firstName, body.lastName, body.relationship, body.phoneNumber]
     );
     if (!result.rowCount) {
       throw new HttpError(404, "Emergency contact not found");
