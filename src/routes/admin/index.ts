@@ -20,3 +20,25 @@ adminRouter.get("/employee-types", async (_req, res) => {
 
   res.json(result.rows);
 });
+
+// offices for employee forms
+adminRouter.get("/offices", async (_req, res) => {
+  const result = await pool.query(`
+    SELECT office_id AS "officeId", name, is_active AS "isActive"
+    FROM office
+    ORDER BY name
+  `);
+
+  res.json(result.rows);
+});
+
+// specialties for doctor forms
+adminRouter.get("/specialties", async (_req, res) => {
+  const result = await pool.query(`
+    SELECT specialty_id AS "specialtyId", name, is_active AS "isActive"
+    FROM specialty
+    ORDER BY name
+  `);
+
+  res.json(result.rows);
+});
