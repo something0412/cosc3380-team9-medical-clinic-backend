@@ -12,6 +12,7 @@ Backend tests that run the real Express app against a local PostgreSQL test data
 - `admin/specialties.test.ts` — specialty directory, create/edit, referral rule, and activation rules.
 - `admin/schedules.test.ts` — doctor schedules, shifts, time slots, and booked-appointment protection.
 - `admin/integration.test.ts` — workflows across features: setting up a doctor's schedule from scratch, deactivation dependencies, login lifecycle, appointment protection, and data integrity.
+- `roleAccess.test.ts` — calls every GET endpoint as anonymous, patient, doctor, nurse, receptionist, and admin, checks each against the expected permissions, and writes what each role got back to `tests/output/role-access/` (git-ignored): one `<role>.json` per role plus a `summary.md` matrix.
 
 ## Setup
 
