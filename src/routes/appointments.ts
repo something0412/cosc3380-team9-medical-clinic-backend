@@ -226,7 +226,6 @@ appointmentsRouter.get("/api/patients/:patientId/referrals", async (req, res) =>
 });
 
 const bookAppointmentSchema = z.object({
-  employeeId: z.number().int().positive(),
   patientId: z.number().int().positive(),
   doctorId: z.number().int().positive(),
   specialtyId: z.number().int().positive(),
@@ -246,7 +245,7 @@ const bookAppointmentSchema = z.object({
 //   3. Check the slot is still free, then INSERT.
 appointmentsRouter.post("/api/appointments", async (req, res) => {
   const body = bookAppointmentSchema.parse(req.body);
-  const { officeId } = await requireStaffType(body.employeeId, "receptionist", "book appointments");
+  const { employeeId, officeId } = await requireStaffType(req, "receptionist", "book appointments");
 
   if (body.date < today()) {
     throw new HttpError(400, "Can't book an appointment in the past");
@@ -317,7 +316,7 @@ appointmentsRouter.post("/api/appointments", async (req, res) => {
         body.date,
         body.timeSlotId,
         body.specialtyId,
-        body.employeeId,
+        employeeId,
       ]
     );
     return result.rows[0].appointment_id as number;
@@ -334,7 +333,6 @@ appointmentsRouter.post("/api/appointments", async (req, res) => {
 // 0 rows instead of corrupting the record. 0 rows -> explain why.
 // ---------------------------------------------------------------------------
 
-const employeeOnly = z.object({ employeeId: z.number().int().positive() });
 
 async function explainNoUpdate(appointmentId: number, officeId: number, action: string): Promise<never> {
   const result = await pool.query(`SELECT office_id FROM appointment WHERE appointment_id = $1`, [appointmentId]);
@@ -346,8 +344,7 @@ async function explainNoUpdate(appointmentId: number, officeId: number, action: 
 // Only on the day of the appointment.
 appointmentsRouter.patch("/api/appointments/:appointmentId/check-in", async (req, res) => {
   const appointmentId = id.parse(req.params.appointmentId);
-  const { employeeId } = employeeOnly.parse(req.body);
-  const { officeId } = await requireStaffType(employeeId, "receptionist", "check patients in");
+  const { officeId } = await requireStaffType(req, "receptionist", "check patients in");
 
   const result = await pool.query(
     `
@@ -366,8 +363,7 @@ appointmentsRouter.patch("/api/appointments/:appointmentId/check-in", async (req
 // Check-out also marks the visit Completed, which makes it billable.
 appointmentsRouter.patch("/api/appointments/:appointmentId/check-out", async (req, res) => {
   const appointmentId = id.parse(req.params.appointmentId);
-  const { employeeId } = employeeOnly.parse(req.body);
-  const { officeId } = await requireStaffType(employeeId, "receptionist", "check patients out");
+  const { officeId } = await requireStaffType(req, "receptionist", "check patients out");
 
   const result = await pool.query(
     `
@@ -387,8 +383,7 @@ appointmentsRouter.patch("/api/appointments/:appointmentId/check-out", async (re
 // checked in, on or after its date.
 appointmentsRouter.patch("/api/appointments/:appointmentId/no-show", async (req, res) => {
   const appointmentId = id.parse(req.params.appointmentId);
-  const { employeeId } = employeeOnly.parse(req.body);
-  const { officeId } = await requireStaffType(employeeId, "receptionist", "mark no-shows");
+  const { officeId } = await requireStaffType(req, "receptionist", "mark no-shows");
 
   const result = await pool.query(
     `

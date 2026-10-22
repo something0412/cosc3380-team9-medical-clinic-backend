@@ -11,7 +11,6 @@ import { HttpError } from "../middleware/errorHandler.js";
 export const nursingRouter = Router();
 
 const id = z.coerce.number().int().positive();
-const employeeOnly = z.object({ employeeId: z.number().int().positive() });
 
 // Empty optional text fields from the form arrive as "" — store them as NULL.
 const optionalText = z
@@ -47,7 +46,6 @@ nursingRouter.get("/api/allergy-types", async (_req, res) => {
 });
 
 const allergySchema = z.object({
-  employeeId: z.number().int().positive(),
   reaction: optionalText,
   severity: z.enum(["Mild", "Moderate", "Severe"]),
 });
@@ -58,7 +56,7 @@ const allergySchema = z.object({
 nursingRouter.post("/api/patients/:patientId/allergies", async (req, res) => {
   const patientId = id.parse(req.params.patientId);
   const body = allergySchema.extend({ allergyTypeId: z.number().int().positive() }).parse(req.body);
-  await requireStaffType(body.employeeId, "nurse", "record allergies");
+  await requireStaffType(req, "nurse", "record allergies");
 
   const allergyId = await withTransaction(async (client) => {
     const updated = await client.query(
@@ -89,7 +87,7 @@ nursingRouter.post("/api/patients/:patientId/allergies", async (req, res) => {
 nursingRouter.patch("/api/allergies/:allergyId", async (req, res) => {
   const allergyId = id.parse(req.params.allergyId);
   const body = allergySchema.parse(req.body);
-  await requireStaffType(body.employeeId, "nurse", "update allergies");
+  await requireStaffType(req, "nurse", "update allergies");
 
   const result = await pool.query(
     `UPDATE allergy SET reaction = $2, severity = $3 WHERE allergy_id = $1 AND is_active`,
@@ -102,8 +100,7 @@ nursingRouter.patch("/api/allergies/:allergyId", async (req, res) => {
 // Soft delete: the row stays, marked inactive.
 nursingRouter.patch("/api/allergies/:allergyId/deactivate", async (req, res) => {
   const allergyId = id.parse(req.params.allergyId);
-  const { employeeId } = employeeOnly.parse(req.body);
-  await requireStaffType(employeeId, "nurse", "remove allergies");
+  await requireStaffType(req, "nurse", "remove allergies");
 
   const result = await pool.query(`UPDATE allergy SET is_active = false WHERE allergy_id = $1 AND is_active`, [
     allergyId,
@@ -140,7 +137,6 @@ const homeMedDetails = {
 
 const addHomeMedSchema = z
   .object({
-    employeeId: z.number().int().positive(),
     // Either pick from the medication list or type a name.
     medicationId: z.number().int().positive().nullable().default(null),
     medicationName: optionalText,
@@ -158,7 +154,7 @@ const addHomeMedSchema = z
 nursingRouter.post("/api/patients/:patientId/home-medications", async (req, res) => {
   const patientId = id.parse(req.params.patientId);
   const body = addHomeMedSchema.parse(req.body);
-  await requireStaffType(body.employeeId, "nurse", "record home medications");
+  await requireStaffType(req, "nurse", "record home medications");
 
   let name = body.medicationName;
   if (body.medicationId) {
@@ -182,8 +178,8 @@ nursingRouter.post("/api/patients/:patientId/home-medications", async (req, res)
 
 nursingRouter.patch("/api/home-medications/:homeMedicationId", async (req, res) => {
   const homeMedicationId = id.parse(req.params.homeMedicationId);
-  const body = z.object({ employeeId: z.number().int().positive(), ...homeMedDetails }).parse(req.body);
-  await requireStaffType(body.employeeId, "nurse", "update home medications");
+  const body = z.object(homeMedDetails).parse(req.body);
+  await requireStaffType(req, "nurse", "update home medications");
 
   const result = await pool.query(
     `
@@ -199,8 +195,7 @@ nursingRouter.patch("/api/home-medications/:homeMedicationId", async (req, res) 
 // The patient stopped taking it: soft delete.
 nursingRouter.patch("/api/home-medications/:homeMedicationId/deactivate", async (req, res) => {
   const homeMedicationId = id.parse(req.params.homeMedicationId);
-  const { employeeId } = employeeOnly.parse(req.body);
-  await requireStaffType(employeeId, "nurse", "update home medications");
+  await requireStaffType(req, "nurse", "update home medications");
 
   const result = await pool.query(
     `UPDATE home_medication SET is_active = false WHERE home_medication_id = $1 AND is_active`,
@@ -235,7 +230,6 @@ nursingRouter.get("/api/appointments/:appointmentId/summary", async (req, res) =
 });
 
 const noteSchema = z.object({
-  employeeId: z.number().int().positive(),
   text: z.string().trim().min(1),
 });
 
@@ -251,14 +245,14 @@ const noteSchema = z.object({
 nursingRouter.post("/api/appointments/:appointmentId/notes", async (req, res) => {
   const appointmentId = id.parse(req.params.appointmentId);
   const body = noteSchema.parse(req.body);
-  const { officeId } = await requireStaffType(body.employeeId, "nurse", "write visit notes");
+  const { employeeId, officeId } = await requireStaffType(req, "nurse", "write visit notes");
 
   const visit = await pool.query(`SELECT office_id FROM appointment WHERE appointment_id = $1`, [appointmentId]);
   if (!visit.rowCount) throw new HttpError(404, "Appointment not found");
   if (visit.rows[0].office_id !== officeId) throw new HttpError(403, "That appointment is at another office");
 
   const nurse = await pool.query(`SELECT first_name || ' ' || last_name AS name FROM employee WHERE employee_id = $1`, [
-    body.employeeId,
+    employeeId,
   ]);
   const stamp = new Date().toLocaleString("en-US", { dateStyle: "short", timeStyle: "short" });
   const entry = `[${nurse.rows[0].name}, ${stamp}] ${body.text}`;
@@ -270,7 +264,7 @@ nursingRouter.post("/api/appointments/:appointmentId/notes", async (req, res) =>
     ON CONFLICT (appointment_id) DO UPDATE
     SET notes = COALESCE(appointment_summary.notes || E'\\n', '') || EXCLUDED.notes
     `,
-    [appointmentId, entry, body.employeeId]
+    [appointmentId, entry, employeeId]
   );
   res.status(201).json({ appointmentId });
 });
@@ -315,7 +309,6 @@ nursingRouter.get("/api/patients/:patientId/lab-orders", async (req, res) => {
 });
 
 const labOrderSchema = z.object({
-  employeeId: z.number().int().positive(),
   patientId: z.number().int().positive(),
   labTestTypeId: z.number().int().positive(),
   // Labs ordered for a visit are added to that visit's invoice minimum.
@@ -324,7 +317,7 @@ const labOrderSchema = z.object({
 
 nursingRouter.post("/api/lab-orders", async (req, res) => {
   const body = labOrderSchema.parse(req.body);
-  const { officeId } = await requireStaffType(body.employeeId, "nurse", "order lab tests");
+  const { employeeId, officeId } = await requireStaffType(req, "nurse", "order lab tests");
   if (body.appointmentId) await checkVisit(body.appointmentId, body.patientId, officeId);
 
   const result = await pool.query(
@@ -333,7 +326,7 @@ nursingRouter.post("/api/lab-orders", async (req, res) => {
     VALUES ($1, $2, $3, $4)
     RETURNING lab_order_id AS "labOrderId", status
     `,
-    [body.patientId, body.employeeId, body.labTestTypeId, body.appointmentId]
+    [body.patientId, employeeId, body.labTestTypeId, body.appointmentId]
   );
   res.status(201).json(result.rows[0]);
 });
@@ -347,7 +340,6 @@ const ALLOWED_FROM: Record<string, string[]> = {
 };
 
 const updateLabSchema = z.object({
-  employeeId: z.number().int().positive(),
   status: z.enum(["InProgress", "Completed", "Cancelled"]).nullable().default(null),
   resultNotes: optionalText,
 });
@@ -358,7 +350,7 @@ const updateLabSchema = z.object({
 nursingRouter.patch("/api/lab-orders/:labOrderId", async (req, res) => {
   const labOrderId = id.parse(req.params.labOrderId);
   const body = updateLabSchema.parse(req.body);
-  await requireStaffType(body.employeeId, "nurse", "update lab orders");
+  await requireStaffType(req, "nurse", "update lab orders");
 
   const from = body.status ? ALLOWED_FROM[body.status] : ["Ordered", "InProgress", "Completed"];
   const result = await pool.query(
@@ -417,7 +409,6 @@ nursingRouter.get("/api/office-supplies", async (req, res) => {
 });
 
 const useSupplySchema = z.object({
-  employeeId: z.number().int().positive(),
   quantity: z.number().int().positive(),
 });
 
@@ -427,7 +418,7 @@ const useSupplySchema = z.object({
 nursingRouter.post("/api/office-supplies/:officeSupplyId/use", async (req, res) => {
   const officeSupplyId = id.parse(req.params.officeSupplyId);
   const body = useSupplySchema.parse(req.body);
-  const { officeId } = await requireStaffType(body.employeeId, "nurse", "use supplies");
+  const { officeId } = await requireStaffType(req, "nurse", "use supplies");
 
   const result = await pool.query(
     `
@@ -475,7 +466,6 @@ nursingRouter.get("/api/supply-orders", async (req, res) => {
 });
 
 const supplyOrderSchema = z.object({
-  employeeId: z.number().int().positive(),
   supplyId: z.number().int().positive(),
   quantity: z.number().int().positive(),
 });
@@ -483,7 +473,7 @@ const supplyOrderSchema = z.object({
 // Request a restock for the nurse's office (status starts as 'Pending').
 nursingRouter.post("/api/supply-orders", async (req, res) => {
   const body = supplyOrderSchema.parse(req.body);
-  const { officeId } = await requireStaffType(body.employeeId, "nurse", "request supplies");
+  const { employeeId, officeId } = await requireStaffType(req, "nurse", "request supplies");
 
   const result = await pool.query(
     `
@@ -491,7 +481,7 @@ nursingRouter.post("/api/supply-orders", async (req, res) => {
     VALUES ($1, $2, $3, $4)
     RETURNING supply_order_id AS "supplyOrderId", status
     `,
-    [body.supplyId, officeId, body.employeeId, body.quantity]
+    [body.supplyId, officeId, employeeId, body.quantity]
   );
   res.status(201).json(result.rows[0]);
 });

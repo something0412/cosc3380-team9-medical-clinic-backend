@@ -86,7 +86,6 @@ const demographicsSchema = {
 
 const registerPatientSchema = z
   .object({
-    employeeId: z.number().int().positive(),
     ...demographicsSchema,
     // All optional, but if given, every field in them is required.
     emergencyContact: z
@@ -120,7 +119,7 @@ const registerPatientSchema = z
 // half-registered patient.
 patientsRouter.post("/api/patients", async (req, res) => {
   const body = registerPatientSchema.parse(req.body);
-  await requireStaffType(body.employeeId, "receptionist", "register patients");
+  await requireStaffType(req, "receptionist", "register patients");
 
   const patient = await withTransaction(async (client) => {
     const patient = await client.query(
@@ -240,7 +239,6 @@ patientsRouter.get("/api/patients/:patientId", async (req, res) => {
 });
 
 const updatePatientSchema = z.object({
-  employeeId: z.number().int().positive(),
   ...demographicsSchema,
 });
 
@@ -253,7 +251,7 @@ const updatePatientSchema = z.object({
 patientsRouter.put("/api/patients/:patientId", async (req, res) => {
   const { patientId } = patientParamsSchema.parse(req.params);
   const body = updatePatientSchema.parse(req.body);
-  await requireStaffType(body.employeeId, "receptionist", "edit patients");
+  await requireStaffType(req, "receptionist", "edit patients");
 
   await withTransaction(async (client) => {
     const result = await client.query(
@@ -282,7 +280,6 @@ patientsRouter.put("/api/patients/:patientId", async (req, res) => {
 });
 
 const credentialsSchema = z.object({
-  employeeId: z.number().int().positive(),
   password: z.string().min(8),
 });
 
@@ -292,7 +289,7 @@ const credentialsSchema = z.object({
 patientsRouter.post("/api/patients/:patientId/credentials", async (req, res) => {
   const { patientId } = patientParamsSchema.parse(req.params);
   const body = credentialsSchema.parse(req.body);
-  await requireStaffType(body.employeeId, "receptionist", "create portal accounts");
+  await requireStaffType(req, "receptionist", "create portal accounts");
 
   const result = await pool.query(
     `
@@ -437,7 +434,6 @@ patientsRouter.get("/api/patients/:patientId/chart", async (req, res) => {
 // readings that can't be real (e.g. a heart rate of 900).
 const vitalsSchema = z
   .object({
-    recordedByEmployeeId: z.number().int().positive(),
     appointmentId: z.number().int().positive().nullable().default(null),
     temperatureF: z.number().min(85).max(115).multipleOf(0.01).nullable().default(null),
     heartRateBpm: z.number().int().min(20).max(300).nullable().default(null),
@@ -462,7 +458,7 @@ const vitalsSchema = z
 patientsRouter.post("/api/patients/:patientId/vitals", async (req, res) => {
   const { patientId } = patientParamsSchema.parse(req.params);
   const body = vitalsSchema.parse(req.body);
-  await requireStaffType(body.recordedByEmployeeId, "nurse", "record vitals");
+  const { employeeId } = await requireStaffType(req, "nurse", "record vitals");
 
   const patient = await pool.query(`SELECT 1 FROM patient WHERE patient_id = $1`, [patientId]);
   if (!patient.rowCount) {
@@ -500,7 +496,7 @@ patientsRouter.post("/api/patients/:patientId/vitals", async (req, res) => {
     [
       patientId,
       body.appointmentId,
-      body.recordedByEmployeeId,
+      employeeId,
       body.temperatureF,
       body.heartRateBpm,
       body.systolic,

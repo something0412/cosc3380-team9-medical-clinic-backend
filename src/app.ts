@@ -84,6 +84,25 @@ app.use("/api/patients", (req, res, next) => {
   next();
 });
 
+// receptionist, billing and nurse routes: staff only (each route also
+// checks nurse vs receptionist itself)
+app.use(
+  [
+    "/api/appointments", "/api/specialties", "/api/doctors", "/api/availability",
+    "/api/invoices", "/api/payments", "/api/payment-types",
+    "/api/emergency-contacts", "/api/form-types",
+    "/api/allergy-types", "/api/allergies", "/api/medications", "/api/home-medications",
+    "/api/lab-test-types", "/api/lab-orders", "/api/office-supplies", "/api/supply-orders",
+  ],
+  (req, res, next) => {
+    if (!req.session.role || req.session.role === "patient") {
+      res.status(401).json({ error: "Staff login required" });
+      return;
+    }
+    next();
+  }
+);
+
 app.use(healthRouter);
 app.use(authRouter);
 app.use(appointmentsRouter);

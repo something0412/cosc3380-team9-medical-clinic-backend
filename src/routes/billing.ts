@@ -201,7 +201,6 @@ billingRouter.get("/api/payment-types", async (_req, res) => {
 const money = z.number().positive().multipleOf(0.01);
 
 const createInvoiceSchema = z.object({
-  employeeId: z.number().int().positive(),
   appointmentId: z.number().int().positive(),
   // Optional: leave it out to bill exactly the minimum.
   amount: money.optional(),
@@ -219,7 +218,7 @@ const createInvoiceSchema = z.object({
 //      so an invoice can't be attached to the wrong patient.
 billingRouter.post("/api/invoices", async (req, res) => {
   const body = createInvoiceSchema.parse(req.body);
-  const { officeId } = await requireStaffType(body.employeeId, "receptionist", "create invoices");
+  const { officeId } = await requireStaffType(req, "receptionist", "create invoices");
 
   const invoice = await withTransaction(async (client) => {
     const appointment = await client.query(
@@ -256,7 +255,6 @@ billingRouter.post("/api/invoices", async (req, res) => {
 });
 
 const recordPaymentSchema = z.object({
-  employeeId: z.number().int().positive(),
   paymentTypeId: z.number().int().positive(),
   amount: money,
 });
@@ -271,7 +269,7 @@ const recordPaymentSchema = z.object({
 billingRouter.post("/api/invoices/:invoiceId/payments", async (req, res) => {
   const invoiceId = id.parse(req.params.invoiceId);
   const body = recordPaymentSchema.parse(req.body);
-  await requireStaffType(body.employeeId, "receptionist", "record payments");
+  const { employeeId } = await requireStaffType(req, "receptionist", "record payments");
 
   const payment = await withTransaction(async (client) => {
     const invoice = await client.query(`SELECT status FROM invoice WHERE invoice_id = $1 FOR UPDATE`, [invoiceId]);
@@ -305,7 +303,7 @@ billingRouter.post("/api/invoices/:invoiceId/payments", async (req, res) => {
       RETURNING payment_id AS "paymentId", invoice_id AS "invoiceId", payment_date AS "paymentDate",
                 amount_paid AS "amountPaid"
       `,
-      [invoiceId, body.paymentTypeId, body.employeeId, body.amount]
+      [invoiceId, body.paymentTypeId, employeeId, body.amount]
     );
 
     // Paying off the full balance closes the invoice.

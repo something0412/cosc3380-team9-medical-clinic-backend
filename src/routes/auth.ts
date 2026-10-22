@@ -4,6 +4,7 @@ import { z } from "zod";
 import { pool } from "../lib/db.js";
 import { hashPassword, verifyPassword } from "../lib/password.js";
 import { STAFF_TYPE_SQL } from "../lib/staff.js";
+import type { StaffType } from "../lib/staff.js";
 import { HttpError } from "../middleware/errorHandler.js";
 
 export const authRouter = Router();
@@ -15,6 +16,9 @@ declare module "express-session" {
     employeeId?: number;
     firstName?: string;
     lastName?: string;
+    // staff only: which staff pages they get, and the office they work at
+    staffType?: StaffType;
+    officeId?: number;
   }
 }
 
@@ -44,7 +48,8 @@ async function startSession(
   role: "patient" | "doctor" | "admin" | "staff",
   id: number,
   firstName: string,
-  lastName: string
+  lastName: string,
+  staff?: { staffType: StaffType; officeId: number }
 ) {
   await new Promise<void>((resolve, reject) => {
     req.session.regenerate((error) => {
@@ -57,6 +62,8 @@ async function startSession(
         req.session.patientId = id;
       } else {
         req.session.employeeId = id;
+        req.session.staffType = staff?.staffType;
+        req.session.officeId = staff?.officeId;
       }
 
       req.session.save((saveError) => {
@@ -182,7 +189,10 @@ authRouter.post("/api/auth/staff/login", async (req, res) => {
     throw new HttpError(401, "Invalid staff ID or password");
   }
 
-  await startSession(req, row.role, row.employeeId, row.firstName, row.lastName);
+  await startSession(req, row.role, row.employeeId, row.firstName, row.lastName, {
+    staffType: row.staffType,
+    officeId: row.officeId,
+  });
 
   const { passwordHash: _, ...employee } = row;
   res.json(employee);
@@ -190,12 +200,16 @@ authRouter.post("/api/auth/staff/login", async (req, res) => {
 
 // current user
 authRouter.get("/api/auth/me", (req, res) => {
-  const { role, patientId, employeeId, firstName, lastName } = req.session;
+  const { role, patientId, employeeId, firstName, lastName, staffType, officeId } = req.session;
   if (!role) {
     res.status(401).json({ error: "Not logged in" });
     return;
   }
-  res.json({ role, id: role === "patient" ? patientId : employeeId, firstName, lastName });
+  if (role === "patient") {
+    res.json({ role, id: patientId, firstName, lastName });
+    return;
+  }
+  res.json({ role, id: employeeId, firstName, lastName, staffType, officeId });
 });
 
 // log out

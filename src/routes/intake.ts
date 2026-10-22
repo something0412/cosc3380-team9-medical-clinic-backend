@@ -9,7 +9,6 @@ import { HttpError } from "../middleware/errorHandler.js";
 export const intakeRouter = Router();
 
 const id = z.coerce.number().int().positive();
-const employeeOnly = z.object({ employeeId: z.number().int().positive() });
 
 // ---------------------------------------------------------------------------
 // Emergency contacts
@@ -21,7 +20,6 @@ const employeeOnly = z.object({ employeeId: z.number().int().positive() });
 // ---------------------------------------------------------------------------
 
 const contactSchema = z.object({
-  employeeId: z.number().int().positive(),
   firstName: z.string().trim().min(1),
   lastName: z.string().trim().min(1),
   relationship: z.string().trim().min(1),
@@ -32,7 +30,7 @@ const contactSchema = z.object({
 intakeRouter.post("/api/patients/:patientId/emergency-contacts", async (req, res) => {
   const patientId = id.parse(req.params.patientId);
   const body = contactSchema.parse(req.body);
-  await requireStaffType(body.employeeId, "receptionist", "manage emergency contacts");
+  await requireStaffType(req, "receptionist", "manage emergency contacts");
 
   const contact = await withTransaction(async (client) => {
     const existing = await client.query(
@@ -64,7 +62,7 @@ intakeRouter.post("/api/patients/:patientId/emergency-contacts", async (req, res
 intakeRouter.put("/api/emergency-contacts/:contactId", async (req, res) => {
   const contactId = id.parse(req.params.contactId);
   const body = contactSchema.parse(req.body);
-  await requireStaffType(body.employeeId, "receptionist", "manage emergency contacts");
+  await requireStaffType(req, "receptionist", "manage emergency contacts");
 
   await withTransaction(async (client) => {
     const result = await client.query(
@@ -95,8 +93,7 @@ intakeRouter.put("/api/emergency-contacts/:contactId", async (req, res) => {
 // Soft delete: contacts are never DELETEd, just marked inactive.
 intakeRouter.patch("/api/emergency-contacts/:contactId/deactivate", async (req, res) => {
   const contactId = id.parse(req.params.contactId);
-  const { employeeId } = employeeOnly.parse(req.body);
-  await requireStaffType(employeeId, "receptionist", "manage emergency contacts");
+  await requireStaffType(req, "receptionist", "manage emergency contacts");
 
   const result = await pool.query(
     `
@@ -125,7 +122,6 @@ intakeRouter.patch("/api/emergency-contacts/:contactId/deactivate", async (req, 
 // ---------------------------------------------------------------------------
 
 const insuranceSchema = z.object({
-  employeeId: z.number().int().positive(),
   provider: z.string().trim().min(1),
   policyNumber: z.string().trim().min(1),
 });
@@ -138,7 +134,7 @@ const insuranceSchema = z.object({
 intakeRouter.put("/api/patients/:patientId/insurance", async (req, res) => {
   const patientId = id.parse(req.params.patientId);
   const body = insuranceSchema.parse(req.body);
-  await requireStaffType(body.employeeId, "receptionist", "manage insurance");
+  await requireStaffType(req, "receptionist", "manage insurance");
 
   const result = await pool.query(
     `
@@ -161,14 +157,13 @@ intakeRouter.put("/api/patients/:patientId/insurance", async (req, res) => {
 });
 
 const insuranceStatusSchema = z.object({
-  employeeId: z.number().int().positive(),
   status: z.enum(["Pending", "Verified", "Denied"]),
 });
 
 intakeRouter.patch("/api/patients/:patientId/insurance/status", async (req, res) => {
   const patientId = id.parse(req.params.patientId);
   const body = insuranceStatusSchema.parse(req.body);
-  await requireStaffType(body.employeeId, "receptionist", "verify insurance");
+  await requireStaffType(req, "receptionist", "verify insurance");
 
   const result = await pool.query(
     `
@@ -240,8 +235,7 @@ intakeRouter.get("/api/patients/:patientId/forms", async (req, res) => {
 intakeRouter.patch("/api/patients/:patientId/forms/:formTypeId/complete", async (req, res) => {
   const patientId = id.parse(req.params.patientId);
   const formTypeId = id.parse(req.params.formTypeId);
-  const { employeeId } = employeeOnly.parse(req.body);
-  await requireStaffType(employeeId, "receptionist", "update forms");
+  await requireStaffType(req, "receptionist", "update forms");
 
   await withTransaction(async (client) => {
     const done = await client.query(

@@ -1,3 +1,4 @@
+import type { Request } from "express";
 import { pool } from "./db.js";
 import { HttpError } from "../middleware/errorHandler.js";
 
@@ -17,9 +18,18 @@ export const STAFF_TYPE_SQL = `
 
 export type StaffType = "nurse" | "receptionist" | "other";
 
-// Throws 403 unless `employeeId` is an active employee of the given type.
-// Returns the employee's office, since staff actions are scoped to it.
-export async function requireStaffType(employeeId: number, staffType: StaffType, action: string) {
+// Checks that the logged-in user (from the session) is an active employee
+// of the given type: 401 if nobody is logged in as staff, 403 if they're
+// the wrong kind of staff. The database is checked on every call, so a
+// deactivated employee is locked out right away. Returns who they are and
+// their office, since staff actions are recorded under them and scoped to
+// that office.
+export async function requireStaffType(req: Request, staffType: StaffType, action: string) {
+  const employeeId = req.session.employeeId;
+  if (!employeeId || req.session.role === "patient") {
+    throw new HttpError(401, "Staff login required");
+  }
+
   const result = await pool.query(
     `
     SELECT ${STAFF_TYPE_SQL} AS "staffType", e.office_id AS "officeId"
@@ -34,5 +44,5 @@ export async function requireStaffType(employeeId: number, staffType: StaffType,
   if (staff?.staffType !== staffType) {
     throw new HttpError(403, `Only ${staffType}s can ${action}`);
   }
-  return { officeId: staff.officeId as number };
+  return { employeeId, officeId: staff.officeId as number };
 }
