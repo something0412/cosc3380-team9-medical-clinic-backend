@@ -22,7 +22,7 @@ export function errorHandler(
   _next: NextFunction
 ) {
   if (err instanceof ZodError) {
-    res.status(400).json({ error: "Validation failed", issues: err.issues });
+    res.status(400).json({ error: err.issues[0]?.message ?? "Validation failed", issues: err.issues });
     return;
   }
 

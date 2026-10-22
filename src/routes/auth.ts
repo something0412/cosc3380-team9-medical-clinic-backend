@@ -1,4 +1,5 @@
 import { Router } from "express";
+import type { Request } from "express";
 import { z } from "zod";
 import { pool } from "../lib/db.js";
 import { hashPassword, verifyPassword } from "../lib/password.js";
@@ -6,6 +7,16 @@ import { STAFF_TYPE_SQL } from "../lib/staff.js";
 import { HttpError } from "../middleware/errorHandler.js";
 
 export const authRouter = Router();
+
+declare module "express-session" {
+  interface SessionData {
+    role?: "patient" | "doctor" | "admin" | "staff";
+    patientId?: number;
+    employeeId?: number;
+    firstName?: string;
+    lastName?: string;
+  }
+}
 
 const signupSchema = z.object({
   firstName: z.string().trim().min(1),
@@ -27,11 +38,46 @@ const staffLoginSchema = z.object({
   password: z.string().min(1),
 });
 
-// Create account
+// start session
+async function startSession(
+  req: Request,
+  role: "patient" | "doctor" | "admin" | "staff",
+  id: number,
+  firstName: string,
+  lastName: string
+) {
+  await new Promise<void>((resolve, reject) => {
+    req.session.regenerate((error) => {
+      if (error) return reject(error);
+
+      req.session.role = role;
+      req.session.firstName = firstName;
+      req.session.lastName = lastName;
+      if (role === "patient") {
+        req.session.patientId = id;
+      } else {
+        req.session.employeeId = id;
+      }
+
+      req.session.save((saveError) => {
+        if (saveError) return reject(saveError);
+        resolve();
+      });
+    });
+  });
+}
+
+// create account
 authRouter.post("/api/auth/patient/signup", async (req, res) => {
   const body = signupSchema.parse(req.body);
   const passwordHash = await hashPassword(body.password);
   const client = await pool.connect();
+  let createdPatient: {
+    patientId: number;
+    firstName: string;
+    lastName: string;
+    email: string;
+  };
 
   try {
     await client.query("BEGIN");
@@ -55,17 +101,20 @@ authRouter.post("/api/auth/patient/signup", async (req, res) => {
       [patient.rows[0].patientId, body.email, passwordHash]
     );
 
+    createdPatient = patient.rows[0];
     await client.query("COMMIT");
-    res.status(201).json(patient.rows[0]);
   } catch (err) {
     await client.query("ROLLBACK");
     throw err;
   } finally {
     client.release();
   }
+
+  await startSession(req, "patient", createdPatient.patientId, createdPatient.firstName, createdPatient.lastName);
+  res.status(201).json(createdPatient);
 });
 
-// Patient login
+// patient login
 authRouter.post("/api/auth/patient/login", async (req, res) => {
   const { patientId, email, password } = patientLoginSchema.parse(req.body);
 
@@ -92,11 +141,13 @@ authRouter.post("/api/auth/patient/login", async (req, res) => {
     throw new HttpError(401, "Invalid patient number, email, or password");
   }
 
+  await startSession(req, "patient", row.patientId, row.firstName, row.lastName);
+
   const { passwordHash: _, ...patient } = row;
   res.json(patient);
 });
 
-// Staff login
+// staff login
 authRouter.post("/api/auth/staff/login", async (req, res) => {
   const { employeeId, password } = staffLoginSchema.parse(req.body);
 
@@ -131,6 +182,27 @@ authRouter.post("/api/auth/staff/login", async (req, res) => {
     throw new HttpError(401, "Invalid staff ID or password");
   }
 
+  await startSession(req, row.role, row.employeeId, row.firstName, row.lastName);
+
   const { passwordHash: _, ...employee } = row;
   res.json(employee);
+});
+
+// current user
+authRouter.get("/api/auth/me", (req, res) => {
+  const { role, patientId, employeeId, firstName, lastName } = req.session;
+  if (!role) {
+    res.status(401).json({ error: "Not logged in" });
+    return;
+  }
+  res.json({ role, id: role === "patient" ? patientId : employeeId, firstName, lastName });
+});
+
+// log out
+authRouter.post("/api/auth/logout", (req, res, next) => {
+  req.session.destroy((error) => {
+    if (error) return next(error);
+    res.clearCookie("connect.sid", { path: "/" });
+    res.status(204).end();
+  });
 });

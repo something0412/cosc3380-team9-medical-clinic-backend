@@ -1,7 +1,7 @@
 import { pool } from "../lib/db.js";
 import { hashPassword } from "../lib/password.js";
 
-// Usage: npm run set-staff-password -- <employeeId> <password>
+// usage: npm run set-staff-password -- <employeeId> <password>
 const [employeeIdArg, password] = process.argv.slice(2);
 const employeeId = Number(employeeIdArg);
 
