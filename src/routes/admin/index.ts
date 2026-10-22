@@ -1,8 +1,11 @@
 import { Router } from "express";
 import { pool } from "../../lib/db.js";
+import { adminEmployeesRouter } from "./employees.js";
 
 // mounted at /api/admin behind requireRole("admin")
 export const adminRouter = Router();
+
+adminRouter.use("/employees", adminEmployeesRouter);
 
 // employee types for role selection
 adminRouter.get("/employee-types", async (_req, res) => {
