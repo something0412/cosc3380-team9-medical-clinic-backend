@@ -24,7 +24,8 @@ app.use(cors({
   credentials: true,
 }));
 
-app.use(morgan("dev"));
+// request logs, turned off while tests run
+app.use(morgan("dev", { skip: () => process.env.NODE_ENV === "test" }));
 
 app.use(express.json());
 
