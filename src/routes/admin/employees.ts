@@ -1,5 +1,5 @@
 import { Router } from "express";
-import type { PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { pool } from "../../lib/db.js";
 import { hashPassword } from "../../lib/password.js";
@@ -51,15 +51,11 @@ const employeeFields = {
   nurse: nurseSchema.nullish(),
 };
 
-const createSchema = z.object({
-  ...employeeFields,
-  login: z
-    .object({
-      username: text("Username", 50),
-      password: z.string().min(8, "Password must be at least 8 characters").max(128, "Password must be 128 characters or less"),
-    })
-    .nullish(),
-});
+const passwordSchema = z.string().min(8, "Password must be at least 8 characters").max(128, "Password must be 128 characters or less");
+
+const loginSchema = z.object({ username: text("Username", 50), password: passwordSchema });
+
+const createSchema = z.object({ ...employeeFields, login: loginSchema.nullish() });
 
 const updateSchema = z.object(employeeFields);
 
@@ -146,6 +142,7 @@ function saveError(err: unknown) {
   const { code, constraint } = err as { code?: string; constraint?: string };
   if (!code) return err;
   if (constraint === "employee_creds_username_key") return new HttpError(409, "That username is already taken");
+  if (constraint === "employee_creds_employee_id_key") return new HttpError(409, "This employee already has a login account");
   if (code === "23505") return new HttpError(409, "This conflicts with an existing record");
   if (code === "23503" || code === "23514" || code === "22001") return new HttpError(400, "Some of the submitted values are not valid");
   console.error(err);
@@ -238,6 +235,26 @@ async function validateEmployee(
   }
 }
 
+async function checkUsername(client: PoolClient, username: string) {
+  const result = await client.query(`SELECT 1 FROM employee_creds WHERE LOWER(username) = LOWER($1)`, [username]);
+  if (result.rowCount) throw new HttpError(409, "That username is already taken");
+}
+
+// employee active flag and whether a login exists
+async function getAccount(db: Pool | PoolClient, employeeId: number) {
+  const result = await db.query(
+    `
+    SELECT e.is_active AS "isActive", c.employee_id IS NOT NULL AS "hasLogin"
+    FROM employee e
+    LEFT JOIN employee_creds c ON c.employee_id = e.employee_id
+    WHERE e.employee_id = $1
+    `,
+    [employeeId]
+  );
+  if (!result.rowCount) throw new HttpError(404, "Employee not found");
+  return result.rows[0] as { isActive: boolean; hasLogin: boolean };
+}
+
 // insert or update the doctor row and its specialties
 async function saveDoctor(client: PoolClient, employeeId: number, doctor: NonNullable<EmployeeInput["doctor"]>) {
   await client.query(
@@ -327,10 +344,7 @@ adminEmployeesRouter.post("/", async (req, res) => {
     const kind = await getRoleKind(client, body.employeeTypeId, null);
     await validateEmployee(client, null, body, kind, null);
 
-    if (body.login) {
-      const username = await client.query(`SELECT 1 FROM employee_creds WHERE LOWER(username) = LOWER($1)`, [body.login.username]);
-      if (username.rowCount) throw new HttpError(409, "That username is already taken");
-    }
+    if (body.login) await checkUsername(client, body.login.username);
 
     const created = await client.query(
       `
@@ -422,4 +436,64 @@ adminEmployeesRouter.put("/:id", async (req, res) => {
   });
 
   res.json(await loadEmployee(employeeId));
+});
+
+// activate or deactivate an employee; their login record is left as is
+adminEmployeesRouter.patch("/:id/status", async (req, res) => {
+  const employeeId = idParam.parse(req.params.id);
+  const { isActive } = z.object({ isActive: z.boolean("Status must be true or false") }).parse(req.body);
+  if (!isActive && employeeId === req.session.employeeId) throw new HttpError(409, "You can't deactivate your own account");
+
+  const result = await pool.query(`UPDATE employee SET is_active = $2 WHERE employee_id = $1`, [employeeId, isActive]);
+  if (!result.rowCount) throw new HttpError(404, "Employee not found");
+
+  res.json(await loadEmployee(employeeId));
+});
+
+// enable or disable an existing login; the password is not changed
+adminEmployeesRouter.patch("/:id/login-status", async (req, res) => {
+  const employeeId = idParam.parse(req.params.id);
+  const { loginActive } = z.object({ loginActive: z.boolean("Login status must be true or false") }).parse(req.body);
+  if (!loginActive && employeeId === req.session.employeeId) throw new HttpError(409, "You can't disable your own login");
+
+  const account = await getAccount(pool, employeeId);
+  if (!account.hasLogin) throw new HttpError(409, "This employee doesn't have a login account");
+  if (loginActive && !account.isActive) throw new HttpError(409, "Activate the employee before enabling their login");
+
+  await pool.query(`UPDATE employee_creds SET is_active = $2 WHERE employee_id = $1`, [employeeId, loginActive]);
+  res.json(await loadEmployee(employeeId));
+});
+
+// set a new password for an existing login; login status is not changed
+adminEmployeesRouter.put("/:id/password", async (req, res) => {
+  const employeeId = idParam.parse(req.params.id);
+  const { password } = z.object({ password: passwordSchema }).parse(req.body);
+
+  const account = await getAccount(pool, employeeId);
+  if (!account.hasLogin) throw new HttpError(409, "This employee doesn't have a login account");
+
+  const passwordHash = await hashPassword(password);
+  await pool.query(`UPDATE employee_creds SET password_hash = $2 WHERE employee_id = $1`, [employeeId, passwordHash]);
+  res.status(204).end();
+});
+
+// add a login for an employee who doesn't have one
+adminEmployeesRouter.post("/:id/login", async (req, res) => {
+  const employeeId = idParam.parse(req.params.id);
+  const login = loginSchema.parse(req.body);
+  const passwordHash = await hashPassword(login.password);
+
+  await inTransaction(async (client) => {
+    const account = await getAccount(client, employeeId);
+    if (account.hasLogin) throw new HttpError(409, "This employee already has a login account");
+    await checkUsername(client, login.username);
+
+    await client.query(`INSERT INTO employee_creds (employee_id, username, password_hash) VALUES ($1, $2, $3)`, [
+      employeeId,
+      login.username,
+      passwordHash,
+    ]);
+  });
+
+  res.status(201).json(await loadEmployee(employeeId));
 });
