@@ -12,6 +12,7 @@ import { authRouter } from "./routes/auth.js";
 import { healthRouter } from "./routes/health.js";
 import { patientProfileRouter } from "./routes/patientProfile.js";
 import { patientsRouter } from "./routes/patients.js";
+import { appointmentBookingRouter } from "./routes/appointmentBooking.js";
 import { staffProfileRouter } from "./routes/staffProfile.js";
 import { templateRouter } from "./routes/template.js";
 
@@ -29,13 +30,13 @@ app.use(morgan("dev", { skip: () => process.env.NODE_ENV === "test" }));
 
 app.use(express.json());
 
-// session secret
+//session secret
 const secret = process.env.SESSION_SECRET ?? randomBytes(32).toString("hex");
 if (process.env.NODE_ENV === "production" && !process.env.SESSION_SECRET) {
   throw new Error("SESSION_SECRET is required in production");
 }
 
-// sessions
+//sessions
 app.use(session({
   secret,
   resave: false,
@@ -48,7 +49,7 @@ app.use(session({
   },
 }));
 
-// patient portal: only the logged-in patient
+//patient portal: only the logged-in patient
 app.use("/api/patient/:id", (req, res, next) => {
   if (req.session.role !== "patient") {
     res.status(401).json({ error: "Patient login required" });
@@ -86,6 +87,7 @@ app.use("/api/patients", (req, res, next) => {
 app.use(healthRouter);
 app.use(authRouter);
 app.use(patientsRouter);
+app.use(appointmentBookingRouter);
 app.use(patientProfileRouter);
 app.use(staffProfileRouter);
 app.use(templateRouter);
