@@ -134,7 +134,7 @@ ALTER TABLE public.appointment ALTER COLUMN appointment_id ADD GENERATED ALWAYS 
 CREATE TABLE public.appointment_summary (
     appointment_summary_id integer NOT NULL,
     appointment_id integer NOT NULL,
-    diagnosis character varying(200),
+    visit_reason character varying(200),
     notes text,
     recorded_by_employee_id integer NOT NULL,
     recorded_date date DEFAULT CURRENT_DATE NOT NULL

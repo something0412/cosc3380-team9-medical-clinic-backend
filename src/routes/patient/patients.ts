@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { pool } from "../lib/db.js";
+import { pool } from "../../lib/db.js";
 
 export const patientsRouter = Router();
 
@@ -193,7 +193,7 @@ patientsRouter.get("/api/patient/:id/records", async (req, res) => {
         SELECT
             a.appointment_id AS "appointmentId",
             a.appointment_date AS "visitDate",
-            s.diagnosis,
+            s.visit_reason AS diagnosis,
             s.notes
         FROM appointment_summary s
         JOIN appointment a ON s.appointment_id = a.appointment_id

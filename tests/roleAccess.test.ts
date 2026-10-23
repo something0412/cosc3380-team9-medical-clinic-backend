@@ -33,7 +33,7 @@ const SAMPLE_DATA = `
     (1, 2, 1, CURRENT_DATE + 7, 1, 1, 'Scheduled', 'Web'),
     (1, 2, 1, CURRENT_DATE - 7, 2, 1, 'Completed', 'Web'),
     (2, 2, 1, CURRENT_DATE + 14, 1, 1, 'Scheduled', 'Web');
-  INSERT INTO appointment_summary (appointment_id, diagnosis, notes, recorded_by_employee_id) VALUES (2, 'Seasonal allergies', 'Follow up in 6 months', 2);
+  INSERT INTO appointment_summary (appointment_id, visit_reason, notes, recorded_by_employee_id) VALUES (2, 'Seasonal allergies', 'Follow up in 6 months', 2);
   INSERT INTO payment_type (name) VALUES ('Credit Card');
   INSERT INTO invoice (patient_id, appointment_id, amount, status) VALUES (1, 2, 150.00, 'Pending'), (2, 3, 80.00, 'Pending');
   INSERT INTO payment (invoice_id, payment_type_id, handled_by, amount_paid) VALUES (1, 1, 4, 50.00);

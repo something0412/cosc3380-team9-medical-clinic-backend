@@ -1,9 +1,9 @@
 import { Router } from "express";
 import { z } from "zod";
-import { pool } from "../lib/db.js";
-import { hashPassword, verifyPassword } from "../lib/password.js";
-import { HttpError } from "../middleware/errorHandler.js";
-import { passwordChangeSchema } from "./patientProfile.js";
+import { pool } from "../../lib/db.js";
+import { hashPassword, verifyPassword } from "../../lib/password.js";
+import { HttpError } from "../../middleware/errorHandler.js";
+import { passwordChangeSchema } from "../patient/patientProfile.js";
 
 export const staffProfileRouter = Router();
 

@@ -9,10 +9,16 @@ import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { requireRole } from "./middleware/requireRole.js";
 import { adminRouter } from "./routes/admin/index.js";
 import { authRouter } from "./routes/auth.js";
+import { doctorAppointmentsRouter } from "./routes/doctor/doctorAppointments.js";
+import { doctorDashboardRouter } from "./routes/doctor/doctorDashboard.js";
+import { doctorLabOrdersRouter } from "./routes/doctor/doctorLabOrders.js";
+import { doctorPatientsRouter } from "./routes/doctor/doctorPatients.js";
+import { doctorReferralsRouter } from "./routes/doctor/doctorReferrals.js";
+import { doctorScheduleRouter } from "./routes/doctor/doctorSchedule.js";
 import { healthRouter } from "./routes/health.js";
-import { patientProfileRouter } from "./routes/patientProfile.js";
-import { patientsRouter } from "./routes/patients.js";
-import { staffProfileRouter } from "./routes/staffProfile.js";
+import { patientProfileRouter } from "./routes/patient/patientProfile.js";
+import { patientsRouter } from "./routes/patient/patients.js";
+import { staffProfileRouter } from "./routes/staff/staffProfile.js";
 import { templateRouter } from "./routes/template.js";
 
 export const app = express();
@@ -83,8 +89,27 @@ app.use("/api/patients", (req, res, next) => {
   next();
 });
 
+// doctor portal: doctors only
+app.use("/api/doctor", (req, res, next) => {
+  if (!req.session.role) {
+    res.status(401).json({ error: "Login required" });
+    return;
+  }
+  if (req.session.role !== "doctor") {
+    res.status(403).json({ error: "Access denied" });
+    return;
+  }
+  next();
+});
+
 app.use(healthRouter);
 app.use(authRouter);
+app.use(doctorDashboardRouter);
+app.use(doctorPatientsRouter);
+app.use(doctorLabOrdersRouter);
+app.use(doctorReferralsRouter);
+app.use(doctorAppointmentsRouter);
+app.use(doctorScheduleRouter);
 app.use(patientsRouter);
 app.use(patientProfileRouter);
 app.use(staffProfileRouter);
