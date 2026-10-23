@@ -12,6 +12,7 @@ import { authRouter } from "./routes/auth.js";
 import { healthRouter } from "./routes/health.js";
 import { patientProfileRouter } from "./routes/patientProfile.js";
 import { patientsRouter } from "./routes/patients.js";
+import { publicRouter } from "./routes/public.js";
 import { staffProfileRouter } from "./routes/staffProfile.js";
 import { templateRouter } from "./routes/template.js";
 
@@ -89,6 +90,9 @@ app.use(patientsRouter);
 app.use(patientProfileRouter);
 app.use(staffProfileRouter);
 app.use(templateRouter);
+
+// public website information, anyone can read it
+app.use("/api/public", publicRouter);
 
 // admin portal: admins only
 app.use("/api/admin", requireRole("admin"), adminRouter);
