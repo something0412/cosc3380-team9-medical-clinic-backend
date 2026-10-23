@@ -8,9 +8,6 @@ import { randomBytes } from "node:crypto";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { requireRole } from "./middleware/requireRole.js";
 import { adminRouter } from "./routes/admin/index.js";
-import { adminRouter } from "./routes/admin.js";
-import { adminPatientsRouter } from "./routes/adminPatients.js";
-import { adminStaffRouter } from "./routes/adminStaff.js";
 import { authRouter } from "./routes/auth.js";
 import { healthRouter } from "./routes/health.js";
 import { patientProfileRouter } from "./routes/patientProfile.js";
@@ -86,24 +83,8 @@ app.use("/api/patients", (req, res, next) => {
   next();
 });
 
-// admin reports: admin only
-app.use("/api/admin", (req, res, next) => {
-  if (!req.session.role) {
-    res.status(401).json({ error: "Admin login required" });
-    return;
-  }
-  if (req.session.role !== "admin") {
-    res.status(403).json({ error: "Access denied" });
-    return;
-  }
-  next();
-});
-
 app.use(healthRouter);
 app.use(authRouter);
-app.use(adminRouter);
-app.use(adminStaffRouter);
-app.use(adminPatientsRouter);
 app.use(patientsRouter);
 app.use(patientProfileRouter);
 app.use(staffProfileRouter);

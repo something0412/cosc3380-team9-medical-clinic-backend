@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { z } from "zod";
-import { pool } from "../lib/db.js";
-import { hashPassword } from "../lib/password.js";
-import { HttpError } from "../middleware/errorHandler.js";
+import { pool } from "../../lib/db.js";
+import { hashPassword } from "../../lib/password.js";
+import { HttpError } from "../../middleware/errorHandler.js";
 
 export const adminStaffRouter = Router();
 
@@ -52,7 +52,7 @@ const UNIQUE_MESSAGES: Record<string, string> = {
 };
 
 // get staff list
-adminStaffRouter.get("/api/admin/staff", async (req, res) => {
+adminStaffRouter.get("/", async (req, res) => {
   const { status, role } = listQuery.parse(req.query);
 
   const result = await pool.query(
@@ -85,7 +85,7 @@ adminStaffRouter.get("/api/admin/staff", async (req, res) => {
 });
 
 // get form options
-adminStaffRouter.get("/api/admin/staff/options", async (_req, res) => {
+adminStaffRouter.get("/options", async (_req, res) => {
   const roles = await pool.query(`
     SELECT employee_type_id AS "employeeTypeId", type_name AS name
     FROM employee_types
@@ -111,7 +111,7 @@ adminStaffRouter.get("/api/admin/staff/options", async (_req, res) => {
 });
 
 // add employee
-adminStaffRouter.post("/api/admin/staff", async (req, res) => {
+adminStaffRouter.post("/", async (req, res) => {
   const body = newStaffSchema.parse(req.body);
   const passwordHash = await hashPassword(body.password);
   const client = await pool.connect();
@@ -190,7 +190,7 @@ adminStaffRouter.post("/api/admin/staff", async (req, res) => {
 });
 
 // edit employee
-adminStaffRouter.put("/api/admin/staff/:id", async (req, res) => {
+adminStaffRouter.put("/:id", async (req, res) => {
   const employeeId = idParam.parse(req.params.id);
   const body = staffSchema.parse(req.body);
   const client = await pool.connect();
@@ -227,7 +227,7 @@ adminStaffRouter.put("/api/admin/staff/:id", async (req, res) => {
 });
 
 // activate or deactivate employee
-adminStaffRouter.patch("/api/admin/staff/:id/status", async (req, res) => {
+adminStaffRouter.patch("/:id/status", async (req, res) => {
   const employeeId = idParam.parse(req.params.id);
   const { isActive } = statusSchema.parse(req.body);
 

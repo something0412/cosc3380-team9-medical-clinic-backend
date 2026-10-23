@@ -1,13 +1,13 @@
 import { Router } from "express";
 import { z } from "zod";
-import { pool } from "../lib/db.js";
+import { pool } from "../../lib/db.js";
 
-export const adminRouter = Router();
+export const adminReportsRouter = Router();
 
 const yearQuery = z.coerce.number().int().min(2000).max(2100).optional();
 
 // dashboard
-adminRouter.get("/api/admin/dashboard", async (req, res) => {
+adminReportsRouter.get("/dashboard", async (req, res) => {
   const year = yearQuery.parse(req.query.year) ?? new Date().getFullYear();
 
   const patients = await pool.query(`
@@ -62,7 +62,7 @@ adminRouter.get("/api/admin/dashboard", async (req, res) => {
 });
 
 // appointment activity
-adminRouter.get("/api/admin/analytics/appointments", async (_req, res) => {
+adminReportsRouter.get("/analytics/appointments", async (_req, res) => {
   const summary = await pool.query(`
     SELECT
       count(*)::int AS total,
@@ -103,7 +103,7 @@ adminRouter.get("/api/admin/analytics/appointments", async (_req, res) => {
 });
 
 // billing and collections
-adminRouter.get("/api/admin/analytics/billing", async (req, res) => {
+adminReportsRouter.get("/analytics/billing", async (req, res) => {
   const year = yearQuery.parse(req.query.year) ?? new Date().getFullYear();
 
   const summary = await pool.query(`

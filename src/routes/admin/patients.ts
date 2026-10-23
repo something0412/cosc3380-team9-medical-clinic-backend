@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
-import { pool } from "../lib/db.js";
-import { HttpError } from "../middleware/errorHandler.js";
+import { pool } from "../../lib/db.js";
+import { HttpError } from "../../middleware/errorHandler.js";
 
 export const adminPatientsRouter = Router();
 
@@ -10,7 +10,7 @@ const listQuery = z.object({ status: z.enum(["active", "inactive", "all"]).defau
 const statusSchema = z.object({ isActive: z.boolean() });
 
 // get patient list
-adminPatientsRouter.get("/api/admin/patients", async (req, res) => {
+adminPatientsRouter.get("/", async (req, res) => {
   const { status } = listQuery.parse(req.query);
 
   const result = await pool.query(
@@ -37,7 +37,7 @@ adminPatientsRouter.get("/api/admin/patients", async (req, res) => {
 });
 
 // activate or deactivate patient
-adminPatientsRouter.patch("/api/admin/patients/:id/status", async (req, res) => {
+adminPatientsRouter.patch("/:id/status", async (req, res) => {
   const patientId = idParam.parse(req.params.id);
   const { isActive } = statusSchema.parse(req.body);
 
