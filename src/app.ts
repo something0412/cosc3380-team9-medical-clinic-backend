@@ -18,6 +18,7 @@ import { doctorScheduleRouter } from "./routes/doctor/doctorSchedule.js";
 import { healthRouter } from "./routes/health.js";
 import { patientProfileRouter } from "./routes/patient/patientProfile.js";
 import { patientsRouter } from "./routes/patient/patients.js";
+import { publicRouter } from "./routes/public.js";
 import { staffProfileRouter } from "./routes/staff/staffProfile.js";
 import { templateRouter } from "./routes/template.js";
 
@@ -114,6 +115,9 @@ app.use(patientsRouter);
 app.use(patientProfileRouter);
 app.use(staffProfileRouter);
 app.use(templateRouter);
+
+// public website information, anyone can read it
+app.use("/api/public", publicRouter);
 
 // admin portal: admins only
 app.use("/api/admin", requireRole("admin"), adminRouter);

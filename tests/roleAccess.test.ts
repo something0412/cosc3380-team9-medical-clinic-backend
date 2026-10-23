@@ -60,6 +60,13 @@ const PATIENT_SECTIONS = ["profile", "appointments", "forms", "billing", "record
 const ENDPOINTS: Endpoint[] = [
   { label: "GET /api/health", path: fixed("/api/health"), expect: PUBLIC },
   { label: "GET /api/template", path: fixed("/api/template"), expect: PUBLIC },
+  ...[
+    "/api/public/doctors",
+    `/api/public/doctors/${ids.doctor}`,
+    "/api/public/offices",
+    `/api/public/offices/${ids.mainOffice}`,
+    "/api/public/specialties",
+  ].map((path) => ({ label: `GET ${path}`, path: fixed(path), expect: PUBLIC })),
   { label: "GET /api/auth/me", path: fixed("/api/auth/me"), expect: LOGGED_IN },
   { label: "GET /api/patients", path: fixed("/api/patients"), expect: STAFF_ONLY },
   ...PATIENT_SECTIONS.map((section) => ({
