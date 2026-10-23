@@ -6,6 +6,9 @@ import session from "express-session";
 import { randomBytes } from "node:crypto";
 
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
+
+import { requireRole } from "./middleware/requireRole.js";
+import { adminRouter } from "./routes/admin/index.js";
 import { appointmentsRouter } from "./routes/appointments.js";
 import { authRouter } from "./routes/auth.js";
 import { billingRouter } from "./routes/billing.js";
@@ -26,7 +29,8 @@ app.use(cors({
   credentials: true,
 }));
 
-app.use(morgan("dev"));
+// request logs, turned off while tests run
+app.use(morgan("dev", { skip: () => process.env.NODE_ENV === "test" }));
 
 app.use(express.json());
 
@@ -113,6 +117,9 @@ app.use(patientsRouter);
 app.use(patientProfileRouter);
 app.use(staffProfileRouter);
 app.use(templateRouter);
+
+// admin portal: admins only
+app.use("/api/admin", requireRole("admin"), adminRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

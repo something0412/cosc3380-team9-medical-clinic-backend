@@ -7,7 +7,9 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "set-staff-password": "tsx src/scripts/setStaffPassword.ts"
+    "set-staff-password": "tsx src/scripts/setStaffPassword.ts",
+    "test": "node --import tsx --test --test-reporter=spec --test-concurrency=1 \"tests/**/*.test.ts\"",
+    "test:file": "node --import tsx --test --test-reporter=spec --test-concurrency=1"
   },
   "keywords": [],
   "author": "",

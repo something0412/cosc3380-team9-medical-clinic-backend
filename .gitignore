@@ -8,3 +8,5 @@ dist/
 .env.dev
 .env.prod
 .env.example
+# role access test output (sample data pulled per role)
+tests/output/
