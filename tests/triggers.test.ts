@@ -4,7 +4,7 @@ import { startTestApp } from "./helpers/testApp.js";
 import type { TestClient } from "./helpers/testApp.js";
 import { ids, resetDatabase } from "./helpers/testDb.js";
 
-// patient 2, a second doctor 5, and three slots. Morning 1 and 2, and Full Day 3 at the same time as 1
+// adds patient 2, doctor 5, and three slots. Slots 1 and 2 are Morning, and slot 3 is Full Day at the same time as slot 1
 const SETUP = `
   INSERT INTO patient (first_name, last_name, dob, phone, email) VALUES ('Olive', 'Other', '1995-02-02', '713-555-9100', 'olive@test.org');
   INSERT INTO shift_type (name, start_time, end_time) VALUES ('Full Day', '08:00', '17:00');
