@@ -1,25 +1,21 @@
 import { Router } from "express";
+import { z } from "zod";
 import { pool } from "../../lib/db.js";
+import { HttpError } from "../../middleware/errorHandler.js";
+import { listAppointments } from "../../services/booking.js";
+import { bookingDate } from "../booking.js";
 
 export const nurseAppointmentsRouter = Router();
 
+const listQuery = z.object({ date: bookingDate.optional() });
+
 // get the appointments at my office on one day (no date = today)
 nurseAppointmentsRouter.get("/api/nurse/appointments", async (req, res) => {
-  const nurseId = req.session.employeeId;
-  const date = req.query.date ? String(req.query.date) : null;
+  if (!req.user || req.user.role === "patient") throw new HttpError(401, "Login required");
+  const { date } = listQuery.parse(req.query);
 
-  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    res.status(400).json({ error: "Date must look like YYYY-MM-DD" });
-    return;
-  }
-
-  // get my office's appointments on the date, not cancelled, earliest first, with whether vitals are done
-  const result = await pool.query(
-    ``,
-    [nurseId, date]
-  );
-
-  res.json(result.rows);
+  // nurses aren't assigned to single visits, so they see their whole office without cancelled visits
+  res.json(await listAppointments({ officeId: req.user.officeId }, { date, includeCancelled: false }));
 });
 
 // get one appointment for the intake page

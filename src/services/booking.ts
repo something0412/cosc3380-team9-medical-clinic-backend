@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { CLINIC_NOW } from "../lib/clinicTime.js";
+import { CLINIC_NOW, CLINIC_TIME_ZONE, CLINIC_TODAY } from "../lib/clinicTime.js";
 import { pool } from "../lib/db.js";
 import { withTransaction } from "../lib/transaction.js";
 import { HttpError } from "../middleware/errorHandler.js";
@@ -139,40 +139,173 @@ export async function findAvailability(search: SlotSearch): Promise<Slot[]> {
     }));
 }
 
+const APPOINTMENT_COLUMNS = `
+  a.appointment_id AS "appointmentId",
+  a.patient_id AS "patientId",
+  p.first_name || ' ' || p.last_name AS "patientName",
+  a.doctor_id AS "doctorId",
+  e.first_name || ' ' || e.last_name AS "doctorName",
+  a.office_id AS "officeId",
+  o.name AS "officeName",
+  a.specialty_id AS "specialtyId",
+  sp.name AS "specialty",
+  to_char(a.appointment_date, 'YYYY-MM-DD') AS "date",
+  a.time_slot_id AS "timeSlotId",
+  to_char(ts.start_time, 'HH24:MI') AS "startTime",
+  to_char(ts.end_time, 'HH24:MI') AS "endTime",
+  a.status,
+  a.booking_channel AS "bookingChannel",
+  a.booked_by_employee_id AS "bookedByEmployeeId",
+  a.referral_id AS "referralId",
+  a.checked_in_at IS NOT NULL AS "checkedIn"
+`;
+
+// staff views also show when the patient arrived and left, in clinic time
+const VISIT_COLUMNS = `
+  ${APPOINTMENT_COLUMNS},
+  to_char(a.checked_in_at AT TIME ZONE '${CLINIC_TIME_ZONE}', 'YYYY-MM-DD HH24:MI') AS "checkedInAt",
+  to_char(a.checked_out_at AT TIME ZONE '${CLINIC_TIME_ZONE}', 'YYYY-MM-DD HH24:MI') AS "checkedOutAt"
+`;
+
+const APPOINTMENT_JOINS = `
+  JOIN patient p ON p.patient_id = a.patient_id
+  JOIN employee e ON e.employee_id = a.doctor_id
+  JOIN office o ON o.office_id = a.office_id
+  JOIN specialty sp ON sp.specialty_id = a.specialty_id
+  JOIN time_slot ts ON ts.time_slot_id = a.time_slot_id
+`;
+
 export async function getAppointment(db: Pool | PoolClient, appointmentId: number) {
-  const result = await db.query(
+  const result = await db.query(`SELECT ${APPOINTMENT_COLUMNS} FROM appointment a ${APPOINTMENT_JOINS} WHERE a.appointment_id = $1`, [
+    appointmentId,
+  ]);
+  return result.rows[0] ?? null;
+}
+
+async function getVisit(appointmentId: number) {
+  const result = await pool.query(`SELECT ${VISIT_COLUMNS} FROM appointment a ${APPOINTMENT_JOINS} WHERE a.appointment_id = $1`, [
+    appointmentId,
+  ]);
+  return result.rows[0];
+}
+
+export interface AppointmentListFilter {
+  // one clinic date, or a range relative to today when it's left out
+  date?: string;
+  when?: "today" | "upcoming" | "past" | "all";
+  search?: string;
+  includeCancelled?: boolean;
+}
+
+// every staff list goes through here, scoped to one office or one doctor so there's no list of every appointment
+export async function listAppointments(scope: { officeId: number } | { doctorId: number }, filter: AppointmentListFilter = {}) {
+  const when = filter.date ? null : (filter.when ?? "today");
+  const result = await pool.query(
+    `
+    SELECT ${VISIT_COLUMNS}
+    FROM appointment a
+    ${APPOINTMENT_JOINS}
+    WHERE ($1::int IS NULL OR a.office_id = $1)
+      AND ($2::int IS NULL OR a.doctor_id = $2)
+      AND ($3::date IS NULL OR a.appointment_date = $3)
+      AND ($4::text IS NULL
+        OR ($4 = 'today' AND a.appointment_date = ${CLINIC_TODAY})
+        OR ($4 = 'upcoming' AND a.appointment_date > ${CLINIC_TODAY})
+        OR ($4 = 'past' AND a.appointment_date < ${CLINIC_TODAY})
+        OR $4 = 'all')
+      AND ($5 = '' OR p.first_name || ' ' || p.last_name ILIKE '%' || $5 || '%' ESCAPE '\\')
+      AND ($6 OR a.status <> 'Cancelled')
+    ORDER BY CASE WHEN $4 IN ('past', 'all') THEN a.appointment_date END DESC, a.appointment_date, ts.start_time, a.appointment_id
+    `,
+    [
+      "officeId" in scope ? scope.officeId : null,
+      "doctorId" in scope ? scope.doctorId : null,
+      filter.date ?? null,
+      when,
+      // a typed % or _ is part of the name, not a wildcard
+      (filter.search ?? "").replace(/[\\%_]/g, (character) => `\\${character}`),
+      filter.includeCancelled ?? true,
+    ]
+  );
+  return result.rows;
+}
+
+type VisitChange = "check in" | "check out" | "mark No Show";
+
+// one conditional update per change, so when two requests race only the first one still matches
+const VISIT_CHANGES: Record<VisitChange, { set: string; allowed: string; done: string }> = {
+  // patients can arrive early, so any time on the clinic date counts
+  "check in": {
+    done: "be checked in",
+    set: "checked_in_at = now()",
+    allowed: `a.status = 'Scheduled' AND a.checked_in_at IS NULL AND a.checked_out_at IS NULL AND a.appointment_date = ${CLINIC_TODAY}`,
+  },
+  // checking out is what completes the visit
+  "check out": {
+    done: "be checked out",
+    set: "checked_out_at = now(), status = 'Completed'",
+    allowed: "a.status = 'Scheduled' AND a.checked_in_at IS NOT NULL AND a.checked_out_at IS NULL",
+  },
+  // only once the whole appointment time is over, so nobody is marked absent while their slot is still running
+  "mark No Show": {
+    done: "be marked No Show",
+    set: "status = 'No Show'",
+    allowed: `a.status = 'Scheduled' AND a.checked_in_at IS NULL AND a.appointment_date + ts.end_time <= ${CLINIC_NOW}`,
+  },
+};
+
+// says why a change didn't match, from the appointment as it is now
+async function refuseVisitChange(appointmentId: number, officeId: number, change: VisitChange): Promise<never> {
+  const result = await pool.query(
     `
     SELECT
-      a.appointment_id AS "appointmentId",
-      a.patient_id AS "patientId",
-      p.first_name || ' ' || p.last_name AS "patientName",
-      a.doctor_id AS "doctorId",
-      e.first_name || ' ' || e.last_name AS "doctorName",
       a.office_id AS "officeId",
-      o.name AS "officeName",
-      a.specialty_id AS "specialtyId",
-      sp.name AS "specialty",
-      to_char(a.appointment_date, 'YYYY-MM-DD') AS "date",
-      a.time_slot_id AS "timeSlotId",
-      to_char(ts.start_time, 'HH24:MI') AS "startTime",
-      to_char(ts.end_time, 'HH24:MI') AS "endTime",
       a.status,
-      a.booking_channel AS "bookingChannel",
-      a.booked_by_employee_id AS "bookedByEmployeeId",
-      a.referral_id AS "referralId",
-      a.checked_in_at IS NOT NULL AS "checkedIn"
+      a.checked_in_at IS NOT NULL AS "checkedIn",
+      a.appointment_date > ${CLINIC_TODAY} AS "future",
+      a.appointment_date < ${CLINIC_TODAY} AS "past",
+      a.appointment_date + ts.end_time > ${CLINIC_NOW} AS "notOver"
     FROM appointment a
-    JOIN patient p ON p.patient_id = a.patient_id
-    JOIN employee e ON e.employee_id = a.doctor_id
-    JOIN office o ON o.office_id = a.office_id
-    JOIN specialty sp ON sp.specialty_id = a.specialty_id
     JOIN time_slot ts ON ts.time_slot_id = a.time_slot_id
     WHERE a.appointment_id = $1
     `,
     [appointmentId]
   );
-  return result.rows[0] ?? null;
+  const row = result.rows[0];
+  if (!row) throw new HttpError(404, "Appointment not found");
+  if (row.officeId !== officeId) throw new HttpError(403, "That appointment is at another office");
+  if (row.status !== "Scheduled") throw new HttpError(409, `Only scheduled appointments can ${VISIT_CHANGES[change].done}. This one is ${row.status}.`);
+
+  if (change === "check in" && row.checkedIn) throw new HttpError(409, "The patient is already checked in");
+  if (change === "check in" && (row.future || row.past)) throw new HttpError(409, "Patients can only be checked in on the day of their appointment");
+  if (change === "check out" && !row.checkedIn) throw new HttpError(409, "The patient hasn't been checked in");
+  if (change === "mark No Show" && row.checkedIn) throw new HttpError(409, "A patient who checked in can't be marked No Show");
+  if (change === "mark No Show" && row.notOver) throw new HttpError(409, "An appointment can only be marked No Show after its time is over");
+  throw new HttpError(409, "This appointment just changed. Reload it and try again.");
 }
+
+async function changeVisit(appointmentId: number, officeId: number, change: VisitChange) {
+  const { set, allowed } = VISIT_CHANGES[change];
+  const result = await pool.query(
+    `
+    UPDATE appointment a
+    SET ${set}
+    FROM time_slot ts
+    WHERE a.appointment_id = $1
+      AND a.office_id = $2
+      AND ts.time_slot_id = a.time_slot_id
+      AND ${allowed}
+    `,
+    [appointmentId, officeId]
+  );
+  if (!result.rowCount) await refuseVisitChange(appointmentId, officeId, change);
+  return getVisit(appointmentId);
+}
+
+// receptionists do these at their own office only
+export const checkInAppointment = (appointmentId: number, officeId: number) => changeVisit(appointmentId, officeId, "check in");
+export const checkOutAppointment = (appointmentId: number, officeId: number) => changeVisit(appointmentId, officeId, "check out");
+export const markNoShow = (appointmentId: number, officeId: number) => changeVisit(appointmentId, officeId, "mark No Show");
 
 export async function bookAppointment(booking: Booking) {
   try {
