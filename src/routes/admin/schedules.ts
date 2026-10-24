@@ -95,7 +95,7 @@ async function countConflictingAppointments(client: PoolClient, doctorId: number
     JOIN time_slot t ON t.time_slot_id = a.time_slot_id
     WHERE a.doctor_id = $1
       AND EXTRACT(ISODOW FROM a.appointment_date) = $2
-      AND a.appointment_date >= CURRENT_DATE
+      AND a.appointment_date >= (now() AT TIME ZONE 'America/Chicago')::date
       AND a.status = 'Scheduled'
       AND ($3::int IS NULL OR a.office_id <> $3 OR a.specialty_id <> $4 OR t.shift_type_id <> $5)
     `,
@@ -184,7 +184,7 @@ adminSchedulesRouter.post("/", async (req, res) => {
   res.status(201).json(await loadSchedule(body.doctorId, body.dayOfWeek));
 });
 
-// change the office, specialty, or shift; doctor and weekday stay the same
+// change the office, specialty, or shift while the doctor and weekday stay the same
 adminSchedulesRouter.put("/:doctorId/:dayOfWeek", async (req, res) => {
   const { doctorId, dayOfWeek } = scheduleKey(req.params);
   const body = assignmentSchema.parse(req.body);
@@ -211,7 +211,7 @@ adminSchedulesRouter.put("/:doctorId/:dayOfWeek", async (req, res) => {
   res.json(await loadSchedule(doctorId, dayOfWeek));
 });
 
-// activate or deactivate a weekly schedule; the row is kept either way
+// activate or deactivate a weekly schedule. The row is kept either way
 adminSchedulesRouter.patch("/:doctorId/:dayOfWeek/status", async (req, res) => {
   const { doctorId, dayOfWeek } = scheduleKey(req.params);
   const { isActive } = statusSchema.parse(req.body);

@@ -39,7 +39,7 @@ async function loadSpecialty(specialtyId: number) {
   return result.rows[0] ?? null;
 }
 
-// names are unique; the database check is case-sensitive, so also compare lowercased
+// names are unique, but the database check is case sensitive, so also compare them in lowercase
 async function checkName(name: string, specialtyId: number | null) {
   const result = await pool.query(`SELECT 1 FROM specialty WHERE LOWER(name) = LOWER($1) AND specialty_id <> $2`, [name, specialtyId ?? 0]);
   if (result.rowCount) throw new HttpError(409, "A specialty with that name already exists");
@@ -50,7 +50,7 @@ function duplicateNameError(err: unknown) {
   return constraint === "specialty_name_key" ? new HttpError(409, "A specialty with that name already exists") : err;
 }
 
-// specialty directory; also used by the doctor specialty checkboxes
+// specialty directory, also used by the doctor specialty checkboxes
 adminSpecialtiesRouter.get("/", async (_req, res) => {
   const result = await pool.query(`
     SELECT
@@ -72,7 +72,7 @@ adminSpecialtiesRouter.get("/:id", async (req, res) => {
   res.json(specialty);
 });
 
-// create a specialty; new specialties start active and unassigned
+// create a specialty, which starts out active and unassigned
 adminSpecialtiesRouter.post("/", async (req, res) => {
   const body = specialtySchema.parse(req.body);
   await checkName(body.name, null);
@@ -89,7 +89,7 @@ adminSpecialtiesRouter.post("/", async (req, res) => {
   res.status(201).json(await loadSpecialty(created.rows[0].specialtyId));
 });
 
-// update name and referral rule; applies to future bookings, existing records are left as is
+// update the name and referral rule. This applies to future bookings and leaves existing records as is
 adminSpecialtiesRouter.put("/:id", async (req, res) => {
   const specialtyId = idParam.parse(req.params.id);
   const body = specialtySchema.parse(req.body);
@@ -109,7 +109,7 @@ adminSpecialtiesRouter.put("/:id", async (req, res) => {
   res.json(await loadSpecialty(specialtyId));
 });
 
-// activate or deactivate a specialty; doctor assignments and schedules are not changed
+// activate or deactivate a specialty without changing doctor assignments or schedules
 adminSpecialtiesRouter.patch("/:id/status", async (req, res) => {
   const specialtyId = idParam.parse(req.params.id);
   const { isActive } = statusSchema.parse(req.body);
