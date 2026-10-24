@@ -11,10 +11,20 @@ import { loadSessionUser } from "./middleware/sessionUser.js";
 import { adminRouter } from "./routes/admin/index.js";
 import { authRouter } from "./routes/auth.js";
 import { bookingRouter } from "./routes/booking.js";
+import { doctorAppointmentsRouter } from "./routes/doctor/doctorAppointments.js";
+import { doctorDashboardRouter } from "./routes/doctor/doctorDashboard.js";
+import { doctorLabOrdersRouter } from "./routes/doctor/doctorLabOrders.js";
+import { doctorPatientsRouter } from "./routes/doctor/doctorPatients.js";
+import { doctorReferralsRouter } from "./routes/doctor/doctorReferrals.js";
+import { doctorScheduleRouter } from "./routes/doctor/doctorSchedule.js";
 import { healthRouter } from "./routes/health.js";
+import { labDashboardRouter } from "./routes/lab/labDashboard.js";
+import { labOrdersRouter } from "./routes/lab/labOrders.js";
+import { nurseRouter } from "./routes/nurse/index.js";
 import { patientPortalRouter } from "./routes/patient/portal.js";
 import { patientProfileRouter } from "./routes/patient/profile.js";
 import { publicRouter } from "./routes/public.js";
+import { receptionistRouter } from "./routes/receptionist/index.js";
 import { staffPatientsRouter } from "./routes/staff/patients.js";
 import { staffProfileRouter } from "./routes/staff/profile.js";
 import { templateRouter } from "./routes/template.js";
@@ -88,8 +98,70 @@ app.use("/api/patients", (req, res, next) => {
   next();
 });
 
+// doctor portal: doctors only
+app.use("/api/doctor", (req, res, next) => {
+  if (!req.session.role) {
+    res.status(401).json({ error: "Login required" });
+    return;
+  }
+  if (req.session.role !== "doctor") {
+    res.status(403).json({ error: "Access denied" });
+    return;
+  }
+  next();
+});
+
+// lab portal: lab technicians only
+app.use("/api/lab", (req, res, next) => {
+  if (!req.session.role) {
+    res.status(401).json({ error: "Login required" });
+    return;
+  }
+  if (req.session.role !== "lab") {
+    res.status(403).json({ error: "Access denied" });
+    return;
+  }
+  next();
+});
+
+// nurse portal: nurses only
+app.use("/api/nurse", (req, res, next) => {
+  if (!req.session.role) {
+    res.status(401).json({ error: "Login required" });
+    return;
+  }
+  if (req.session.role !== "staff" || req.session.employeeType !== "Nurse") {
+    res.status(403).json({ error: "Access denied" });
+    return;
+  }
+  next();
+});
+
+// receptionist portal: receptionists only
+app.use("/api/receptionist", (req, res, next) => {
+  if (!req.session.role) {
+    res.status(401).json({ error: "Login required" });
+    return;
+  }
+  if (req.session.role !== "staff" || req.session.employeeType !== "Receptionist") {
+    res.status(403).json({ error: "Access denied" });
+    return;
+  }
+  next();
+});
+
 app.use(healthRouter);
 app.use(authRouter);
+app.use(doctorDashboardRouter);
+app.use(doctorPatientsRouter);
+app.use(doctorLabOrdersRouter);
+app.use(doctorReferralsRouter);
+app.use(doctorAppointmentsRouter);
+app.use(doctorScheduleRouter);
+app.use(labDashboardRouter);
+app.use(labOrdersRouter);
+app.use(nurseRouter);
+app.use(receptionistRouter);
 app.use(staffPatientsRouter);
 app.use(patientPortalRouter);
 app.use(patientProfileRouter);

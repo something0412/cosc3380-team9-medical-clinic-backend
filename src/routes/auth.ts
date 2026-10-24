@@ -10,9 +10,10 @@ export const authRouter = Router();
 
 declare module "express-session" {
   interface SessionData {
-    role?: "patient" | "doctor" | "admin" | "staff";
+    role?: "patient" | "doctor" | "admin" | "staff" | "lab";
     patientId?: number;
     employeeId?: number;
+    employeeType?: string;
     firstName?: string;
     lastName?: string;
   }
@@ -40,10 +41,11 @@ const staffLoginSchema = z.object({
 
 async function startSession(
   req: Request,
-  role: "patient" | "doctor" | "admin" | "staff",
+  role: "patient" | "doctor" | "admin" | "staff" | "lab",
   id: number,
   firstName: string,
-  lastName: string
+  lastName: string,
+  employeeType?: string
 ) {
   await new Promise<void>((resolve, reject) => {
     req.session.regenerate((error) => {
@@ -56,6 +58,7 @@ async function startSession(
         req.session.patientId = id;
       } else {
         req.session.employeeId = id;
+        req.session.employeeType = employeeType;
       }
 
       req.session.save((saveError) => {
@@ -172,7 +175,7 @@ authRouter.post("/api/auth/staff/login", async (req, res) => {
     throw new HttpError(401, "Invalid staff ID or password");
   }
 
-  await startSession(req, row.role, row.employeeId, row.firstName, row.lastName);
+  await startSession(req, row.role, row.employeeId, row.firstName, row.lastName, row.employeeType);
 
   const { passwordHash: _, ...employee } = row;
   res.json(employee);
