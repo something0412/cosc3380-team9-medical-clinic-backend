@@ -8,8 +8,8 @@ This folder has the SQL for the Medical Clinic database. The live PostgreSQL dat
 
 Editing these files doesn't change Supabase. Changes have to be applied there separately.
 
-Migrations 003 to 005 add the appointment history, employee audit, and appointment conflict triggers. They're already applied to the shared Supabase database and included in `schema.sql`, so there's no need to run them there again.
+Migrations 003 to 005 add the appointment history, employee audit, and appointment conflict triggers. They're already applied to the shared Supabase database and included in `schema.sql`, so don't run them there again.
 
-A new migration should be reviewed, applied to Supabase once with `psql` over the session mode connection (port 5432), and then `schema.sql` should be refreshed from Supabase. Until it's in `schema.sql`, add the file name to `pendingMigrations` in `tests/helpers/testDb.ts` so the tests apply it.
+To add a new migration, have it reviewed first. Then apply it to Supabase once with `psql` over the session pooler connection on port 5432, and refresh `schema.sql` from Supabase. Until it's in `schema.sql`, add the file name to `pendingMigrations` in `tests/helpers/testDb.ts` so the tests apply it.
 
-`schema.sql` is exported without privileges. If you build a new Supabase project from it, also run migrations 003 and 004, which are safe to run again. They remove the default API role access to the two audit tables.
+`schema.sql` is exported without privileges. If you ever build a new Supabase project from it, also run migrations 003 and 004 there. They're safe to run again, and they remove the default API access to the two audit tables.

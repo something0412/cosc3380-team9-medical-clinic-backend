@@ -3,7 +3,6 @@ import { pool } from "../../lib/db.js";
 
 export const staffPatientsRouter = Router();
 
-// get all patients
 staffPatientsRouter.get("/api/patients", async (_req, res) => {
     const result = await pool.query(`
         SELECT
@@ -22,7 +21,6 @@ staffPatientsRouter.get("/api/patients", async (_req, res) => {
 });
 
 
-// add a new patient
 staffPatientsRouter.post("/api/patients", async (req, res) => {
     const {
         firstName,

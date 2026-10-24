@@ -1,11 +1,8 @@
 import type { Pool, PoolClient } from "pg";
+import { CLINIC_NOW } from "../lib/clinicTime.js";
 import { pool } from "../lib/db.js";
 import { withTransaction } from "../lib/transaction.js";
 import { HttpError } from "../middleware/errorHandler.js";
-
-// offices don't store a time zone yet, so every clinic time uses this one
-const CLINIC_TIME_ZONE = "America/Chicago";
-const CLINIC_NOW = `(now() AT TIME ZONE '${CLINIC_TIME_ZONE}')`;
 
 export interface SlotSearch {
   date: string;

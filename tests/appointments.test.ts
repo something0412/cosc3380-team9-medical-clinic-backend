@@ -899,10 +899,13 @@ describe("authorization and privacy", () => {
   test("a deactivated receptionist loses booking access right away", async () => {
     await app.db.query(`UPDATE employee SET is_active = false WHERE employee_id = $1`, [RECEPTIONIST.main]);
     try {
-      assert.equal((await availability(mia, { date: day(7) })).status, 403);
+      assert.equal((await availability(mia, { date: day(7) })).status, 401);
     } finally {
       await app.db.query(`UPDATE employee SET is_active = true WHERE employee_id = $1`, [RECEPTIONIST.main]);
     }
+    // the old session was ended, so reactivating the account means signing in again
+    assert.equal((await availability(mia, { date: day(7) })).status, 401);
+    mia = await app.loginStaff(RECEPTIONIST.main);
     assert.equal((await availability(mia, { date: day(7) })).status, 200);
   });
 

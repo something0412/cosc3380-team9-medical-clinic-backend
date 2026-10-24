@@ -2,7 +2,7 @@
 
 Backend tests that run the real Express app against a local PostgreSQL test database.
 
-**Tests must never run against the shared Supabase database.** They only use `TEST_DATABASE_URL`, and refuse to start unless it points to a local database whose name ends in `_test`.
+Tests must never run against the shared Supabase database. They only use `TEST_DATABASE_URL`, and they refuse to start unless it points to a local database whose name ends in `_test`.
 
 ## What's covered
 
@@ -17,7 +17,10 @@ Backend tests that run the real Express app against a local PostgreSQL test data
 - `appointments.test.ts` covers availability, public availability for visitors, booking, referrals, simultaneous bookings, Admin schedule changes, cancellation, and booking permissions.
 - `triggers.test.ts` covers the appointment history, employee audit, and appointment conflict triggers, plus row level security on the audit tables.
 - `profiles.test.ts` covers patient and staff profile updates, emergency contacts, insurance, certificates, password rules, ownership checks, and registration of every patient and staff route.
-- `roleAccess.test.ts` calls every GET endpoint as anonymous, patient, doctor, nurse, receptionist, and admin and checks each against the expected permissions. It writes what each role got back to `tests/output/role-access/`, which Git ignores, with one `<role>.json` per role and a `summary.md` matrix.
+- `sessions.test.ts` covers ending sessions for deactivated, disabled, and deleted accounts, and checks that role, staff type, and office changes apply on the next request.
+- `errors.test.ts` covers the shared error handler, including safe responses for database errors that would otherwise show private details.
+- `clinicTime.test.ts` checks the patient dashboard and certificate status against the Chicago date while the database date is a day off, and that No Show visits aren't counted as upcoming.
+- `roleAccess.test.ts` calls every GET endpoint as each role and checks the expected permissions. It saves what each role got back in `tests/output/role-access/`, which Git ignores.
 
 ## Setup
 

@@ -302,7 +302,6 @@ async function saveNurse(client: PoolClient, employeeId: number, nurse: NonNulla
   );
 }
 
-// employee directory
 adminEmployeesRouter.get("/", async (_req, res) => {
   const result = await pool.query(`
     SELECT
@@ -328,7 +327,6 @@ adminEmployeesRouter.get("/", async (_req, res) => {
   res.json(result.rows);
 });
 
-// one employee with doctor or nurse details
 adminEmployeesRouter.get("/:id", async (req, res) => {
   const employee = await loadEmployee(idParam.parse(req.params.id));
   if (!employee) throw new HttpError(404, "Employee not found");

@@ -1,6 +1,5 @@
 import { Router } from "express";
-import type { NextFunction, Request, Response } from "express";
-import { z, ZodError } from "zod";
+import { z } from "zod";
 import { pool } from "../lib/db.js";
 import { HttpError } from "../middleware/errorHandler.js";
 import { findAvailability } from "../services/booking.js";
@@ -196,11 +195,4 @@ publicRouter.get("/availability", async (req, res) => {
       endTime: slot.endTime,
     }))
   );
-});
-
-// keep database and server details out of public error messages
-publicRouter.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
-  if (err instanceof HttpError || err instanceof ZodError) return next(err);
-  console.error(err);
-  res.status(500).json({ error: "Something went wrong. Please try again later." });
 });

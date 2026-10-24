@@ -77,7 +77,7 @@ function newSchedule(doctorId: number, dayOfWeek: string, officeId: number, spec
   return created(admin.post("/api/admin/schedules", { doctorId, dayOfWeek, officeId, specialtyId, shiftTypeId }));
 }
 
-// fictional appointment on the next (or, with weeksAgo, a past) given weekday
+// an appointment on the next given weekday, or a past one when weeksAgo is set
 async function bookAppointment(a: { doctorId: number; day: string; officeId: number; specialtyId: number; timeSlotId: number; weeksAgo?: number }) {
   const { rows } = await app.db.query(
     `

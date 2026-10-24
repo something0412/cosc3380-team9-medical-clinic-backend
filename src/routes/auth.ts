@@ -4,6 +4,7 @@ import { z } from "zod";
 import { pool } from "../lib/db.js";
 import { hashPassword, verifyPassword } from "../lib/password.js";
 import { HttpError } from "../middleware/errorHandler.js";
+import { EMPLOYEE_ROLE_SQL } from "../middleware/sessionUser.js";
 
 export const authRouter = Router();
 
@@ -38,7 +39,6 @@ const staffLoginSchema = z.object({
   password: z.string().min(1),
 });
 
-// start session
 async function startSession(
   req: Request,
   role: "patient" | "doctor" | "admin" | "staff" | "lab",
@@ -69,7 +69,6 @@ async function startSession(
   });
 }
 
-// create account
 authRouter.post("/api/auth/patient/signup", async (req, res) => {
   const body = signupSchema.parse(req.body);
   const passwordHash = await hashPassword(body.password);
@@ -116,7 +115,6 @@ authRouter.post("/api/auth/patient/signup", async (req, res) => {
   res.status(201).json(createdPatient);
 });
 
-// patient login
 authRouter.post("/api/auth/patient/login", async (req, res) => {
   const { patientId, email, password } = patientLoginSchema.parse(req.body);
 
@@ -149,7 +147,6 @@ authRouter.post("/api/auth/patient/login", async (req, res) => {
   res.json(patient);
 });
 
-// staff login
 authRouter.post("/api/auth/staff/login", async (req, res) => {
   const { employeeId, password } = staffLoginSchema.parse(req.body);
 
@@ -160,12 +157,7 @@ authRouter.post("/api/auth/staff/login", async (req, res) => {
       e.first_name AS "firstName",
       e.last_name AS "lastName",
       t.type_name AS "employeeType",
-      CASE
-        WHEN d.employee_id IS NOT NULL THEN 'doctor'
-        WHEN t.type_name ILIKE 'admin%' THEN 'admin'
-        WHEN t.type_name = 'Lab Technician' THEN 'lab'
-        ELSE 'staff'
-      END AS role,
+      ${EMPLOYEE_ROLE_SQL} AS role,
       c.password_hash AS "passwordHash"
     FROM employee e
     JOIN employee_creds c ON c.employee_id = e.employee_id
@@ -191,15 +183,14 @@ authRouter.post("/api/auth/staff/login", async (req, res) => {
 
 // current user
 authRouter.get("/api/auth/me", (req, res) => {
-  const { role, patientId, employeeId, employeeType, firstName, lastName } = req.session;
-  if (!role) {
+  const { user } = req;
+  if (!user) {
     res.status(401).json({ error: "Not logged in" });
     return;
   }
-  res.json({ role, id: role === "patient" ? patientId : employeeId, employeeType, firstName, lastName });
+  res.json({ role: user.role, id: user.role === "patient" ? user.patientId : user.employeeId, firstName: user.firstName, lastName: user.lastName });
 });
 
-// log out
 authRouter.post("/api/auth/logout", (req, res, next) => {
   req.session.destroy((error) => {
     if (error) return next(error);

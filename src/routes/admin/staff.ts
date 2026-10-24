@@ -51,7 +51,6 @@ const UNIQUE_MESSAGES: Record<string, string> = {
   nurse_nursing_license_number_key: "This nursing license number is already registered",
 };
 
-// get staff list
 adminStaffRouter.get("/", async (req, res) => {
   const { status, role } = listQuery.parse(req.query);
 
@@ -84,7 +83,7 @@ adminStaffRouter.get("/", async (req, res) => {
   res.json(result.rows);
 });
 
-// get form options
+// roles, offices, and specialties for the staff form
 adminStaffRouter.get("/options", async (_req, res) => {
   const roles = await pool.query(`
     SELECT employee_type_id AS "employeeTypeId", type_name AS name
@@ -110,7 +109,6 @@ adminStaffRouter.get("/options", async (_req, res) => {
   res.json({ roles: roles.rows, offices: offices.rows, specialties: specialties.rows });
 });
 
-// add employee
 adminStaffRouter.post("/", async (req, res) => {
   const body = newStaffSchema.parse(req.body);
   const passwordHash = await hashPassword(body.password);
@@ -189,7 +187,6 @@ adminStaffRouter.post("/", async (req, res) => {
   }
 });
 
-// edit employee
 adminStaffRouter.put("/:id", async (req, res) => {
   const employeeId = idParam.parse(req.params.id);
   const body = staffSchema.parse(req.body);
@@ -226,7 +223,7 @@ adminStaffRouter.put("/:id", async (req, res) => {
   }
 });
 
-// activate or deactivate employee
+// activate or deactivate an employee and their login
 adminStaffRouter.patch("/:id/status", async (req, res) => {
   const employeeId = idParam.parse(req.params.id);
   const { isActive } = statusSchema.parse(req.body);

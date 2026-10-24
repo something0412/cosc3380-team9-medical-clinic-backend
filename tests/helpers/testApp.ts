@@ -14,7 +14,7 @@ export async function startTestApp() {
   // imported here so testDb has already pointed DATABASE_URL at the test database
   const { app } = await import("../../src/app.js");
   const { pool } = await import("../../src/lib/db.js");
-  // this is a local test server URL, so it's fine to build it here instead of keeping it in .env
+  // a local test URL, so it doesn't need to come from .env
   const server = app.listen(0, "127.0.0.1");
   await once(server, "listening");
   const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -55,6 +55,7 @@ export async function startTestApp() {
 
   return {
     db: pool,
+    baseUrl,
     client,
     loginStaff: (employeeId: number, password = TEST_PASSWORD) => login("/api/auth/staff/login", { employeeId, password }),
     loginPatient: (patientId: number, email: string) => login("/api/auth/patient/login", { patientId, email, password: TEST_PASSWORD }),

@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { requireRole } from "./middleware/requireRole.js";
+import { loadSessionUser } from "./middleware/sessionUser.js";
 import { adminRouter } from "./routes/admin/index.js";
 import { authRouter } from "./routes/auth.js";
 import { bookingRouter } from "./routes/booking.js";
@@ -42,13 +43,11 @@ app.use(morgan("dev", { skip: () => process.env.NODE_ENV === "test" }));
 
 app.use(express.json());
 
-// session secret
 const secret = process.env.SESSION_SECRET ?? randomBytes(32).toString("hex");
 if (process.env.NODE_ENV === "production" && !process.env.SESSION_SECRET) {
   throw new Error("SESSION_SECRET is required in production");
 }
 
-// sessions
 app.use(session({
   secret,
   resave: false,
@@ -60,6 +59,9 @@ app.use(session({
     maxAge: 8 * 60 * 60 * 1000,
   },
 }));
+
+// deactivated or deleted accounts lose their session before any route sees it
+app.use(loadSessionUser);
 
 // only the logged in patient can use their patient portal
 app.use("/api/patient/:id", (req, res, next) => {

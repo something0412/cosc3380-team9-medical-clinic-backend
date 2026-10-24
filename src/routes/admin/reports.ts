@@ -1,12 +1,12 @@
 import { Router } from "express";
 import { z } from "zod";
+import { CLINIC_NOW } from "../../lib/clinicTime.js";
 import { pool } from "../../lib/db.js";
 
 export const adminReportsRouter = Router();
 
 const yearQuery = z.coerce.number().int().min(2000).max(2100).optional();
 
-// dashboard
 adminReportsRouter.get("/dashboard", async (req, res) => {
   const year = yearQuery.parse(req.query.year) ?? new Date().getFullYear();
 
@@ -21,7 +21,7 @@ adminReportsRouter.get("/dashboard", async (req, res) => {
     FROM appointment a
     JOIN time_slot t ON t.time_slot_id = a.time_slot_id
     WHERE a.status = 'Scheduled'
-      AND a.appointment_date + t.start_time >= (now() AT TIME ZONE 'America/Chicago')
+      AND a.appointment_date + t.start_time >= ${CLINIC_NOW}
   `);
 
   const money = await pool.query(`

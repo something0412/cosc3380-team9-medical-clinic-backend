@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { PoolClient } from "pg";
 import { z } from "zod";
+import { CLINIC_TODAY } from "../../lib/clinicTime.js";
 import { pool } from "../../lib/db.js";
 import { withTransaction } from "../../lib/transaction.js";
 import { HttpError } from "../../middleware/errorHandler.js";
@@ -32,7 +33,7 @@ async function countUpcomingAppointments(client: PoolClient, where: "t.time_slot
     SELECT COUNT(*)::int AS count
     FROM appointment a
     JOIN time_slot t ON t.time_slot_id = a.time_slot_id
-    WHERE ${where} = $1 AND a.appointment_date >= (now() AT TIME ZONE 'America/Chicago')::date AND a.status = 'Scheduled'
+    WHERE ${where} = $1 AND a.appointment_date >= ${CLINIC_TODAY} AND a.status = 'Scheduled'
     `,
     [id]
   );

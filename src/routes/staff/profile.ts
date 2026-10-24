@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
+import { CLINIC_TODAY } from "../../lib/clinicTime.js";
 import { pool } from "../../lib/db.js";
 import { hashPassword, passwordChangeSchema, verifyPassword } from "../../lib/password.js";
 import { HttpError } from "../../middleware/errorHandler.js";
@@ -20,7 +21,6 @@ const certificateSchema = z
   })
   .refine((c) => c.expirationDate >= c.issueDate, { message: "Expiration date must be on or after issue date" });
 
-// get profile
 staffProfileRouter.get("/api/staff/:id/profile", async (req, res) => {
   const employeeId = idParam.parse(req.params.id);
 
@@ -139,7 +139,6 @@ staffProfileRouter.put("/api/staff/:id/profile", async (req, res) => {
   res.json(updated.rows[0]);
 });
 
-// add certificate
 staffProfileRouter.post("/api/staff/:id/certificates", async (req, res) => {
   const employeeId = idParam.parse(req.params.id);
   const body = certificateSchema.parse(req.body);
@@ -147,7 +146,7 @@ staffProfileRouter.post("/api/staff/:id/certificates", async (req, res) => {
   const created = await pool.query(
     `
     INSERT INTO certificate (employee_id, name, issue_date, expiration_date, status)
-    VALUES ($1, $2, $3, $4, CASE WHEN $4::date < CURRENT_DATE THEN 'Expired' ELSE 'Active' END)
+    VALUES ($1, $2, $3, $4, CASE WHEN $4::date < ${CLINIC_TODAY} THEN 'Expired' ELSE 'Active' END)
     RETURNING
       certificate_id AS "certificateId",
       name,
@@ -161,7 +160,6 @@ staffProfileRouter.post("/api/staff/:id/certificates", async (req, res) => {
   res.status(201).json(created.rows[0]);
 });
 
-// update certificate
 staffProfileRouter.put("/api/staff/:id/certificates/:certificateId", async (req, res) => {
   const employeeId = idParam.parse(req.params.id);
   const certificateId = idParam.parse(req.params.certificateId);
@@ -171,7 +169,7 @@ staffProfileRouter.put("/api/staff/:id/certificates/:certificateId", async (req,
     `
     UPDATE certificate
     SET name = $1, issue_date = $2, expiration_date = $3,
-        status = CASE WHEN status = 'Revoked' THEN status WHEN $3::date < CURRENT_DATE THEN 'Expired' ELSE 'Active' END
+        status = CASE WHEN status = 'Revoked' THEN status WHEN $3::date < ${CLINIC_TODAY} THEN 'Expired' ELSE 'Active' END
     WHERE certificate_id = $4 AND employee_id = $5
     RETURNING
       certificate_id AS "certificateId",
@@ -187,7 +185,6 @@ staffProfileRouter.put("/api/staff/:id/certificates/:certificateId", async (req,
   res.json(updated.rows[0]);
 });
 
-// remove certificate
 staffProfileRouter.delete("/api/staff/:id/certificates/:certificateId", async (req, res) => {
   const employeeId = idParam.parse(req.params.id);
   const certificateId = idParam.parse(req.params.certificateId);
@@ -201,7 +198,6 @@ staffProfileRouter.delete("/api/staff/:id/certificates/:certificateId", async (r
   res.status(204).end();
 });
 
-// change password
 staffProfileRouter.put("/api/staff/:id/password", async (req, res) => {
   const employeeId = idParam.parse(req.params.id);
   const { currentPassword, newPassword } = passwordChangeSchema.parse(req.body);

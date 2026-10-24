@@ -1,6 +1,7 @@
 import { Router } from "express";
 import type { PoolClient } from "pg";
 import { z } from "zod";
+import { CLINIC_TODAY } from "../../lib/clinicTime.js";
 import { pool } from "../../lib/db.js";
 import { withTransaction } from "../../lib/transaction.js";
 import { HttpError } from "../../middleware/errorHandler.js";
@@ -95,7 +96,7 @@ async function countConflictingAppointments(client: PoolClient, doctorId: number
     JOIN time_slot t ON t.time_slot_id = a.time_slot_id
     WHERE a.doctor_id = $1
       AND EXTRACT(ISODOW FROM a.appointment_date) = $2
-      AND a.appointment_date >= (now() AT TIME ZONE 'America/Chicago')::date
+      AND a.appointment_date >= ${CLINIC_TODAY}
       AND a.status = 'Scheduled'
       AND ($3::int IS NULL OR a.office_id <> $3 OR a.specialty_id <> $4 OR t.shift_type_id <> $5)
     `,

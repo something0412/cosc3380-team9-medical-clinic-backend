@@ -37,34 +37,17 @@ interface BookingUser {
 }
 
 // only patients and receptionists can search, book, and cancel
-async function getBookingUser(req: Request): Promise<BookingUser> {
-  const { role, patientId, employeeId } = req.session;
-  if (!role) throw new HttpError(401, "Login required");
-  if (role === "patient" && patientId) return { patientId };
-
-  // nurses and receptionists share the staff role, so the employee type decides
-  if (role === "staff" && employeeId) {
-    const result = await pool.query(
-      `
-      SELECT e.office_id AS "officeId"
-      FROM employee e
-      JOIN employee_types t ON t.employee_type_id = e.employee_type_id
-      WHERE e.employee_id = $1
-        AND e.is_active
-        AND t.type_name ILIKE 'reception%'
-        AND NOT EXISTS (SELECT 1 FROM nurse n WHERE n.employee_id = e.employee_id)
-      `,
-      [employeeId]
-    );
-    if (result.rowCount) return { receptionist: { employeeId, officeId: result.rows[0].officeId } };
-  }
-
+function getBookingUser(req: Request): BookingUser {
+  const { user } = req;
+  if (!user) throw new HttpError(401, "Login required");
+  if (user.role === "patient") return { patientId: user.patientId };
+  if (user.staffType === "receptionist") return { receptionist: { employeeId: user.employeeId, officeId: user.officeId } };
   throw new HttpError(403, "Only patients and receptionists can book appointments");
 }
 
 // open appointment times
 bookingRouter.get("/api/availability", async (req, res) => {
-  const user = await getBookingUser(req);
+  const user = getBookingUser(req);
   const query = availabilityQuery.parse(req.query);
 
   if (user.patientId && query.patientId && query.patientId !== user.patientId) {
@@ -84,7 +67,7 @@ bookingRouter.get("/api/availability", async (req, res) => {
 
 // book for the signed in patient, or for the patient a receptionist chose
 bookingRouter.post("/api/appointments", async (req, res) => {
-  const user = await getBookingUser(req);
+  const user = getBookingUser(req);
   const body = bookingBody.parse(req.body);
 
   let patientId: number;
@@ -112,7 +95,7 @@ bookingRouter.post("/api/appointments", async (req, res) => {
 
 // cancel but keep the record
 bookingRouter.patch("/api/appointments/:id/cancel", async (req, res) => {
-  const user = await getBookingUser(req);
+  const user = getBookingUser(req);
   const appointmentId = id.parse(req.params.id);
   const appointment = await cancelAppointment(appointmentId, { patientId: user.patientId, officeId: user.receptionist?.officeId });
   res.json(appointment);
@@ -120,7 +103,7 @@ bookingRouter.patch("/api/appointments/:id/cancel", async (req, res) => {
 
 // one appointment, for a confirmation or details page
 bookingRouter.get("/api/appointments/:id", async (req, res) => {
-  const user = await getBookingUser(req);
+  const user = getBookingUser(req);
   const appointmentId = id.parse(req.params.id);
 
   const appointment = await getAppointment(pool, appointmentId);
