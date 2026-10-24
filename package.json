@@ -8,8 +8,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "set-staff-password": "tsx src/scripts/setStaffPassword.ts",
-    "test": "node --import tsx --test --test-reporter=spec --test-concurrency=1 \"tests/**/*.test.ts\"",
-    "test:file": "node --import tsx --test --test-reporter=spec --test-concurrency=1"
+    "test": "node --import tsx --import ./tests/helpers/testDb.ts --test --test-reporter=spec --test-concurrency=1 \"tests/**/*.test.ts\"",
+    "test:file": "node --import tsx --import ./tests/helpers/testDb.ts --test --test-reporter=spec --test-concurrency=1"
   },
   "keywords": [],
   "author": "",

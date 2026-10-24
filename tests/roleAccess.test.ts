@@ -8,8 +8,8 @@ import { TEST_PASSWORD, ids, resetDatabase } from "./helpers/testDb.js";
 // what each role got back is written here (ignored by Git) so it can be looked at after a run
 const outputDir = new URL("./output/role-access/", import.meta.url);
 
-type RoleName = "anonymous" | "patient" | "doctor" | "nurse" | "receptionist" | "admin";
-const ROLE_NAMES: RoleName[] = ["anonymous", "patient", "doctor", "nurse", "receptionist", "admin"];
+type RoleName = "anonymous" | "patient" | "doctor" | "nurse" | "receptionist" | "admin" | "lab";
+const ROLE_NAMES: RoleName[] = ["anonymous", "patient", "doctor", "nurse", "receptionist", "admin", "lab"];
 
 interface Role {
   name: RoleName;
@@ -44,17 +44,19 @@ const SAMPLE_DATA = `
 `;
 
 // expected status per role
-const PUBLIC = { anonymous: 200, patient: 200, doctor: 200, nurse: 200, receptionist: 200, admin: 200 };
-const LOGGED_IN = { anonymous: 401, patient: 200, doctor: 200, nurse: 200, receptionist: 200, admin: 200 };
-const STAFF_ONLY = { anonymous: 401, patient: 401, doctor: 200, nurse: 200, receptionist: 200, admin: 200 };
-const OWN_PATIENT = { anonymous: 401, patient: 200, doctor: 401, nurse: 401, receptionist: 401, admin: 401 };
-const OTHER_PATIENT_DATA = { anonymous: 401, patient: 403, doctor: 401, nurse: 401, receptionist: 401, admin: 401 };
-const OWN_STAFF = { anonymous: 401, patient: 401, doctor: 200, nurse: 200, receptionist: 200, admin: 200 };
-const OTHER_STAFF = { anonymous: 401, patient: 401, doctor: 403, nurse: 403, receptionist: 403, admin: 403 };
-const ADMIN_ONLY = { anonymous: 401, patient: 403, doctor: 403, nurse: 403, receptionist: 403, admin: 200 };
-const BOOKING = { anonymous: 401, patient: 200, doctor: 403, nurse: 403, receptionist: 200, admin: 403 };
+const PUBLIC = { anonymous: 200, patient: 200, doctor: 200, nurse: 200, receptionist: 200, admin: 200, lab: 200 };
+const LOGGED_IN = { anonymous: 401, patient: 200, doctor: 200, nurse: 200, receptionist: 200, admin: 200, lab: 200 };
+const RECEPTIONIST_DIRECTORY = { anonymous: 401, patient: 401, doctor: 403, nurse: 403, receptionist: 200, admin: 403, lab: 403 };
+const RECEPTIONIST_ONLY = { anonymous: 401, patient: 403, doctor: 403, nurse: 403, receptionist: 200, admin: 403, lab: 403 };
+const LAB_ONLY = { anonymous: 401, patient: 403, doctor: 403, nurse: 403, receptionist: 403, admin: 403, lab: 200 };
+const OWN_PATIENT = { anonymous: 401, patient: 200, doctor: 401, nurse: 401, receptionist: 401, admin: 401, lab: 401 };
+const OTHER_PATIENT_DATA = { anonymous: 401, patient: 403, doctor: 401, nurse: 401, receptionist: 401, admin: 401, lab: 401 };
+const OWN_STAFF = { anonymous: 401, patient: 401, doctor: 200, nurse: 200, receptionist: 200, admin: 200, lab: 200 };
+const OTHER_STAFF = { anonymous: 401, patient: 401, doctor: 403, nurse: 403, receptionist: 403, admin: 403, lab: 403 };
+const ADMIN_ONLY = { anonymous: 401, patient: 403, doctor: 403, nurse: 403, receptionist: 403, admin: 200, lab: 403 };
+const BOOKING = { anonymous: 401, patient: 200, doctor: 403, nurse: 403, receptionist: 200, admin: 403, lab: 403 };
 // appointment 1 is the patient's, at an office other than the receptionist's
-const OWN_APPOINTMENT = { anonymous: 401, patient: 200, doctor: 403, nurse: 403, receptionist: 403, admin: 403 };
+const OWN_APPOINTMENT = { anonymous: 401, patient: 200, doctor: 403, nurse: 403, receptionist: 403, admin: 403, lab: 403 };
 
 const fixed = (path: string) => () => path;
 const PATIENT_SECTIONS = ["profile", "appointments", "forms", "billing", "records", "dashboard"];
@@ -76,7 +78,10 @@ const ENDPOINTS: Endpoint[] = [
     expect: PUBLIC,
   },
   { label: "GET /api/auth/me", path: fixed("/api/auth/me"), expect: LOGGED_IN },
-  { label: "GET /api/patients", path: fixed("/api/patients"), expect: STAFF_ONLY },
+  { label: "GET /api/patients", path: fixed("/api/patients"), expect: RECEPTIONIST_DIRECTORY },
+  { label: "GET /api/receptionist/patients/1", path: fixed(`/api/receptionist/patients/${ids.patient}`), expect: RECEPTIONIST_ONLY },
+  { label: "GET /api/lab/dashboard", path: fixed("/api/lab/dashboard"), expect: LAB_ONLY },
+  { label: "GET /api/lab/orders", path: fixed("/api/lab/orders"), expect: LAB_ONLY },
   { label: "GET /api/availability", path: fixed("/api/availability?date=2030-01-07"), expect: BOOKING },
   { label: "GET /api/appointments/1", path: fixed("/api/appointments/1"), expect: OWN_APPOINTMENT },
   ...PATIENT_SECTIONS.map((section) => ({
@@ -151,12 +156,28 @@ before(async () => {
 
   await app.db.query(SAMPLE_DATA);
 
+  // the fixtures have no lab technician, so one is added the same way the Admin portal would
+  const labType = await app.db.query(`INSERT INTO employee_types (type_name) VALUES ('Lab Technician') RETURNING employee_type_id AS id`);
+  const labTech = await admin.post("/api/admin/employees", {
+    firstName: "Lee",
+    lastName: "Lab",
+    dob: "1992-04-04",
+    email: "lee@test.org",
+    phone: "713-555-1004",
+    employeeTypeId: labType.rows[0].id,
+    officeId: ids.mainOffice,
+  });
+  assert.equal(labTech.status, 201);
+  const labLogin = await admin.post(`/api/admin/employees/${labTech.body.employeeId}/login`, { username: "lee.access", password: TEST_PASSWORD });
+  assert.equal(labLogin.status, 201);
+
   roles.anonymous = { name: "anonymous", id: ids.admin, client: app.client() };
   roles.patient = { name: "patient", id: ids.patient, client: await app.loginPatient(ids.patient, "pat@test.org") };
   roles.doctor = { name: "doctor", id: ids.doctor, client: await app.loginStaff(ids.doctor) };
   roles.nurse = { name: "nurse", id: ids.nurse, client: await app.loginStaff(ids.nurse) };
   roles.receptionist = { name: "receptionist", id: ids.receptionist, client: await app.loginStaff(ids.receptionist) };
   roles.admin = { name: "admin", id: ids.admin, client: admin };
+  roles.lab = { name: "lab", id: labTech.body.employeeId, client: await app.loginStaff(labTech.body.employeeId) };
 
   const hashes = await app.db.query(`SELECT password_hash FROM employee_creds UNION ALL SELECT password_hash FROM patient_creds`);
   passwordHashes = hashes.rows.map((r) => r.password_hash);
@@ -237,7 +258,7 @@ describe("role access", () => {
   });
 
   test("staff profiles show the logged-in employee's own details", () => {
-    for (const name of ["doctor", "nurse", "receptionist", "admin"] as const) {
+    for (const name of ["doctor", "nurse", "receptionist", "admin", "lab"] as const) {
       const profile = results[name]?.["GET /api/staff/<own>/profile"];
       assert.equal(profile?.body.employeeId, roles[name].id, name);
     }

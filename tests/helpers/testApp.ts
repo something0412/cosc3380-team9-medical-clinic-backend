@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
-import { TEST_PASSWORD } from "./testDb.js";
+import { TEST_PASSWORD, assertTestDatabase } from "./testDb.js";
 
 export interface TestResponse {
   status: number;
@@ -14,6 +14,8 @@ export async function startTestApp() {
   // imported here so testDb has already pointed DATABASE_URL at the test database
   const { app } = await import("../../src/app.js");
   const { pool } = await import("../../src/lib/db.js");
+  // stop before the server starts if the app's pool points anywhere else
+  assertTestDatabase((pool as unknown as { options: { connectionString?: string } }).options.connectionString);
   // a local test URL, so it doesn't need to come from .env
   const server = app.listen(0, "127.0.0.1");
   await once(server, "listening");
