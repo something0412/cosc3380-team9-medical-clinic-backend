@@ -46,7 +46,7 @@ function testDatabaseUrl() {
   if (!database.endsWith("_test")) {
     throw new Error(`Refusing to test against database "${database}". The test database name must end in _test.`);
   }
-  return { value, database };
+  return { value, database, url };
 }
 
 const target = testDatabaseUrl();
@@ -54,6 +54,31 @@ const target = testDatabaseUrl();
 // the app reads DATABASE_URL, so point it at the test database before the app is imported
 process.env.DATABASE_URL = target.value;
 process.env.NODE_ENV = "test";
+
+// throws unless the connection string is the TEST_DATABASE_URL database, ignoring options like a time zone
+export function assertTestDatabase(connectionString: string | undefined) {
+  let url: URL | null = null;
+  try {
+    url = new URL(connectionString ?? "");
+  } catch {
+    // handled below
+  }
+  if (!url || url.hostname !== target.url.hostname || url.port !== target.url.port || url.pathname !== target.url.pathname) {
+    throw new Error("Refusing to connect. Tests may only use the database in TEST_DATABASE_URL.");
+  }
+}
+
+// every pool checks its target before connecting, even one made by src code imported before this file
+const poolConnect = pg.Pool.prototype.connect;
+pg.Pool.prototype.connect = function (this: pg.Pool, callback?: (err: Error | undefined, ...rest: unknown[]) => void) {
+  try {
+    assertTestDatabase((this as unknown as { options: { connectionString?: string } }).options.connectionString);
+  } catch (err) {
+    if (callback) return callback(err as Error);
+    return Promise.reject(err);
+  }
+  return (poolConnect as (cb?: unknown) => unknown).call(this, callback);
+} as typeof poolConnect;
 
 const schemaPath = new URL("../../database/schema.sql", import.meta.url);
 const fixturesPath = new URL("./fixtures.sql", import.meta.url);

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../../lib/db.js";
-import { HttpError } from "../../middleware/errorHandler.js";
+import { setPatientActive } from "../../services/patients.js";
 
 export const adminPatientsRouter = Router();
 
@@ -39,13 +39,5 @@ adminPatientsRouter.get("/", async (req, res) => {
 adminPatientsRouter.patch("/:id/status", async (req, res) => {
   const patientId = idParam.parse(req.params.id);
   const { isActive } = statusSchema.parse(req.body);
-
-  const updated = await pool.query(
-    `UPDATE patient SET is_active = $1 WHERE patient_id = $2 RETURNING patient_id AS "patientId", is_active AS "isActive"`,
-    [isActive, patientId]
-  );
-  if (!updated.rowCount) throw new HttpError(404, "Patient not found");
-
-  await pool.query(`UPDATE patient_creds SET is_active = $1 WHERE patient_id = $2`, [isActive, patientId]);
-  res.json(updated.rows[0]);
+  res.json(await setPatientActive(patientId, isActive));
 });

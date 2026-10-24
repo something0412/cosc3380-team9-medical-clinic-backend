@@ -179,6 +179,7 @@ describe("existing role checks", () => {
     assert.equal((await admin.get(`/api/patient/${ids.patient}/billing`)).status, 401);
     assert.equal((await patient.get(`/api/patient/${ids.patient}/billing`)).status, 200);
     assert.equal((await patient.get("/api/patients")).status, 401);
-    assert.equal((await admin.get("/api/patients")).status, 200);
+    // the patient directory is only for receptionists
+    assert.equal((await admin.get("/api/patients")).status, 403);
   });
 });

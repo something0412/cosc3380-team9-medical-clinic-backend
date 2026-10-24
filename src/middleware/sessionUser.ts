@@ -1,7 +1,9 @@
 import type { Request, RequestHandler } from "express";
 import { pool } from "../lib/db.js";
 
-export type StaffType = "doctor" | "admin" | "nurse" | "receptionist" | "other";
+export type Role = "patient" | "doctor" | "admin" | "staff" | "lab";
+
+export type StaffType = "doctor" | "admin" | "nurse" | "receptionist" | "lab" | "other";
 
 export interface PatientUser {
   role: "patient";
@@ -11,7 +13,7 @@ export interface PatientUser {
 }
 
 export interface EmployeeUser {
-  role: "doctor" | "admin" | "staff";
+  role: Exclude<Role, "patient">;
   employeeId: number;
   firstName: string;
   lastName: string;
@@ -32,8 +34,10 @@ declare global {
 }
 
 // app role for an employee, shared with staff login so both always agree
+// lab technicians are checked first so a leftover doctor or nurse row can't give them more access
 export const EMPLOYEE_ROLE_SQL = `
   CASE
+    WHEN t.type_name = 'Lab Technician' THEN 'lab'
     WHEN d.employee_id IS NOT NULL THEN 'doctor'
     WHEN t.type_name ILIKE 'admin%' THEN 'admin'
     ELSE 'staff'
@@ -43,6 +47,7 @@ export const EMPLOYEE_ROLE_SQL = `
 // nurses and receptionists share the staff role, so the nurse table and employee type tell them apart
 const STAFF_TYPE_SQL = `
   CASE
+    WHEN t.type_name = 'Lab Technician' THEN 'lab'
     WHEN d.employee_id IS NOT NULL THEN 'doctor'
     WHEN t.type_name ILIKE 'admin%' THEN 'admin'
     WHEN n.employee_id IS NOT NULL THEN 'nurse'
