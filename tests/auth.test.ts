@@ -47,6 +47,12 @@ const ADMIN_ENDPOINTS: [string, string, unknown?][] = [
   ["PUT", "/api/admin/shift-types/1", { name: "Changed", startTime: "08:00", endTime: "12:00" }],
   ["PATCH", "/api/admin/shift-types/1/status", { isActive: false }],
   ["POST", "/api/admin/shift-types/1/time-slots", { startTime: "08:00", endTime: "08:30" }],
+  ["GET", "/api/admin/invoices"],
+  ["GET", "/api/admin/payments"],
+  ["GET", "/api/admin/payment-types"],
+  ["GET", "/api/admin/billable-appointments"],
+  ["POST", "/api/admin/invoices", { appointmentId: 1, amount: "50.00" }],
+  ["POST", "/api/admin/invoices/1/payments", { paymentTypeId: 1, amount: "10.00" }],
 ];
 
 async function request(client: TestClient, method: string, path: string, body?: unknown) {
@@ -56,7 +62,7 @@ async function request(client: TestClient, method: string, path: string, body?: 
 
 // fingerprint of the data the Admin endpoints can change
 async function dataSnapshot() {
-  const tables = ["employee", "employee_creds", "office", "specialty", "doctor_schedule", "shift_type", "time_slot"];
+  const tables = ["employee", "employee_creds", "office", "specialty", "doctor_schedule", "shift_type", "time_slot", "invoice", "payment"];
   const rows = await Promise.all(tables.map((t) => app.db.query(`SELECT md5(COALESCE(string_agg(t::text, '|' ORDER BY t::text), '')) AS hash FROM ${t} t`)));
   return rows.map((r) => r.rows[0].hash).join();
 }

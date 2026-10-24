@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { CLINIC_NOW } from "../../lib/clinicTime.js";
 import { pool } from "../../lib/db.js";
+import { INVOICE_BALANCES } from "../../services/billing.js";
 
 export const adminReportsRouter = Router();
 
@@ -27,16 +28,7 @@ adminReportsRouter.get("/dashboard", async (req, res) => {
   const money = await pool.query(`
     SELECT
       (SELECT COALESCE(sum(amount_paid), 0) FROM payment)::float AS collected,
-      (
-        SELECT COALESCE(sum(i.amount - COALESCE(p.paid, 0)), 0)
-        FROM invoice i
-        LEFT JOIN (
-          SELECT invoice_id, sum(amount_paid) AS paid
-          FROM payment
-          GROUP BY invoice_id
-        ) p ON p.invoice_id = i.invoice_id
-        WHERE i.status <> 'Paid'
-      )::float AS pending
+      (SELECT COALESCE(sum(b.balance), 0) FROM (${INVOICE_BALANCES}) b)::float AS pending
   `);
 
   const signups = await pool.query(
@@ -118,14 +110,9 @@ adminReportsRouter.get("/analytics/billing", async (req, res) => {
 
   const balances = await pool.query(`
     SELECT
-      COALESCE(sum(i.amount - COALESCE(p.paid, 0)) FILTER (WHERE i.status <> 'Paid'), 0)::float AS outstanding,
-      COALESCE(sum(i.amount - COALESCE(p.paid, 0)) FILTER (WHERE i.status = 'Overdue'), 0)::float AS overdue
-    FROM invoice i
-    LEFT JOIN (
-      SELECT invoice_id, sum(amount_paid) AS paid
-      FROM payment
-      GROUP BY invoice_id
-    ) p ON p.invoice_id = i.invoice_id
+      COALESCE(sum(b.balance), 0)::float AS outstanding,
+      COALESCE(sum(b.balance) FILTER (WHERE b.status = 'Overdue'), 0)::float AS overdue
+    FROM (${INVOICE_BALANCES}) b
   `);
 
   const byMonth = await pool.query(
@@ -157,14 +144,13 @@ adminReportsRouter.get("/analytics/billing", async (req, res) => {
       pt.first_name || ' ' || pt.last_name AS "patientName",
       to_char(i.issue_date, 'YYYY-MM-DD') AS "issueDate",
       i.amount::float AS amount,
-      (i.amount - COALESCE(sum(p.amount_paid), 0))::float AS balance,
+      b.balance::float AS balance,
       i.status
     FROM invoice i
+    JOIN (${INVOICE_BALANCES}) b ON b.invoice_id = i.invoice_id
     JOIN patient pt ON pt.patient_id = i.patient_id
-    LEFT JOIN payment p ON p.invoice_id = i.invoice_id
-    WHERE i.status <> 'Paid'
-    GROUP BY i.invoice_id, pt.first_name, pt.last_name
-    ORDER BY i.issue_date
+    WHERE b.balance > 0
+    ORDER BY i.issue_date, i.invoice_id
   `);
 
   res.json({

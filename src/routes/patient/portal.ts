@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { CLINIC_TODAY } from "../../lib/clinicTime.js";
 import { pool } from "../../lib/db.js";
+import { getOutstandingBalance, getPatientBilling } from "../../services/billing.js";
 
 export const patientPortalRouter = Router();
 
@@ -63,44 +64,9 @@ patientPortalRouter.get("/api/patient/:id/forms", async (req, res) => {
 });
 
 
+// invoices with what's been paid and what's left, plus the same balance the Admin sees
 patientPortalRouter.get("/api/patient/:id/billing", async (req, res) => {
-    const patientId = Number(req.params.id);
-
-    const invoices = await pool.query(
-        `
-        SELECT
-            invoice_id AS "invoiceId",
-            issue_date AS "issueDate",
-            amount,
-            status
-        FROM invoice
-        WHERE patient_id = $1
-        ORDER BY issue_date DESC, invoice_id DESC
-        `,
-        [patientId]
-    );
-
-    const payments = await pool.query(
-        `
-        SELECT
-            p.payment_id AS "paymentId",
-            p.invoice_id AS "invoiceId",
-            p.payment_date AS "paymentDate",
-            p.amount_paid AS "amountPaid",
-            pt.name AS "paymentType"
-        FROM payment p
-        JOIN invoice i ON p.invoice_id = i.invoice_id
-        JOIN payment_type pt ON p.payment_type_id = pt.payment_type_id
-        WHERE i.patient_id = $1
-        ORDER BY p.payment_date DESC, p.payment_id DESC
-        `,
-        [patientId]
-    );
-
-    res.json({
-        invoices: invoices.rows,
-        payments: payments.rows
-    });
+    res.json(await getPatientBilling(Number(req.params.id)));
 });
 
 
@@ -200,30 +166,9 @@ patientPortalRouter.get("/api/patient/:id/dashboard", async (req, res) => {
         [patientId]
     );
 
-    const billing = await pool.query(
-        `
-        SELECT COALESCE(
-            SUM(
-                GREATEST(
-                    i.amount - COALESCE(
-                        (
-                            SELECT SUM(p.amount_paid)
-                            FROM payment p
-                            WHERE p.invoice_id = i.invoice_id
-                        ), 0
-                    ), 0
-                )
-            ), 0
-        ) AS balance
-        FROM invoice i
-        WHERE i.patient_id = $1
-        `,
-        [patientId]
-    );
-
     res.json({
         upcomingAppointments: appointments.rows[0].total,
         pendingForms: forms.rows[0].total,
-        outstandingBalance: billing.rows[0].balance
+        outstandingBalance: await getOutstandingBalance(patientId)
     });
 });

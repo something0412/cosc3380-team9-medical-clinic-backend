@@ -119,6 +119,11 @@ const ENDPOINTS: Endpoint[] = [
     "/api/admin/schedules/doctor-options",
     `/api/admin/schedules/${ids.doctor}/Monday`,
     "/api/admin/shift-types",
+    "/api/admin/invoices",
+    "/api/admin/invoices/1",
+    "/api/admin/payments",
+    "/api/admin/payment-types",
+    "/api/admin/billable-appointments",
   ].map((path) => ({ label: `GET ${path}`, path: fixed(path), expect: ADMIN_ONLY })),
 ];
 

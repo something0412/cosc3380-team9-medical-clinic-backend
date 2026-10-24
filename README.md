@@ -45,6 +45,7 @@ src/
   services/booking.ts   shared booking rules for patients and receptionists
   services/patients.ts  shared patient rules for sign up, the front desk, profiles, and Admin
   services/referrals.ts referral rules for doctors and the patient portal
+  services/billing.ts   invoices, payments, and the balance every billing view uses
   middleware/           signed in user check, error handler, and role checks
   lib/                  database pool, transactions, password hashing, and clinic time
 database/               schema snapshot and migrations
@@ -62,6 +63,7 @@ Most route files write their full `/api/...` paths and are mounted in `app.ts`. 
 - Use `CLINIC_TODAY` and `CLINIC_NOW` from `src/lib/clinicTime.ts` for clinic dates. The database runs on UTC, so `CURRENT_DATE` can already be tomorrow in Chicago.
 - Booking, check in, check out, No Show, and the staff appointment lists go through `src/services/booking.ts`. Don't add separate scheduling checks.
 - Creating, approving, denying, and listing referrals go through `src/services/referrals.ts`. Booking still decides whether a referral can be used for an appointment.
+- Invoices, payments, and balances go through `src/services/billing.ts`. Only admins create invoices or record payments.
 - Patient sign up, front desk registration, portal logins, status, contact info, emergency contacts, and insurance go through `src/services/patients.ts`.
 
 ## Database
