@@ -123,6 +123,8 @@ const ENDPOINTS: Endpoint[] = [
     "/api/admin/employee-types",
     "/api/admin/employees",
     `/api/admin/employees/${ids.doctor}`,
+    "/api/admin/staff",
+    "/api/admin/staff/options",
     "/api/admin/offices",
     `/api/admin/offices/${ids.mainOffice}`,
     "/api/admin/specialties",

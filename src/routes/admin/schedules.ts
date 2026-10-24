@@ -68,6 +68,8 @@ function scheduleKey(params: Record<string, string | undefined>) {
 
 // doctor, office, specialty, and shift must all be active, and the doctor must practice the specialty
 async function checkAssignment(client: PoolClient, a: Assignment) {
+  // the same lock booking takes, so a doctor being deactivated or losing this specialty is waited for
+  await client.query(`SELECT 1 FROM employee WHERE employee_id = $1 FOR SHARE`, [a.doctorId]);
   const result = await client.query(
     `
     SELECT
