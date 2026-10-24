@@ -7,6 +7,29 @@ import { HttpError } from "../../middleware/errorHandler.js";
 
 export const staffProfileRouter = Router();
 
+// a doctor's active weekly schedule, Monday first
+export async function getWeeklySchedule(doctorId: number) {
+  const result = await pool.query(
+    `
+    SELECT
+      ds.day_of_week AS "dayOfWeek",
+      o.name AS "officeName",
+      s.name AS specialty,
+      st.name AS shift,
+      to_char(st.start_time, 'HH24:MI') AS "startTime",
+      to_char(st.end_time, 'HH24:MI') AS "endTime"
+    FROM doctor_schedule ds
+    JOIN office o ON o.office_id = ds.office_id
+    JOIN specialty s ON s.specialty_id = ds.specialty_id
+    JOIN shift_type st ON st.shift_type_id = ds.shift_type_id
+    WHERE ds.doctor_id = $1 AND ds.is_active
+    ORDER BY array_position(ARRAY['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']::varchar[], ds.day_of_week)
+    `,
+    [doctorId]
+  );
+  return result.rows;
+}
+
 const idParam = z.coerce.number().int().positive();
 
 const phoneSchema = z.object({
@@ -70,24 +93,7 @@ staffProfileRouter.get("/api/staff/:id/profile", async (req, res) => {
     [employeeId]
   );
 
-  const schedule = await pool.query(
-    `
-    SELECT
-      ds.day_of_week AS "dayOfWeek",
-      o.name AS "officeName",
-      s.name AS specialty,
-      st.name AS shift,
-      to_char(st.start_time, 'HH24:MI') AS "startTime",
-      to_char(st.end_time, 'HH24:MI') AS "endTime"
-    FROM doctor_schedule ds
-    JOIN office o ON o.office_id = ds.office_id
-    JOIN specialty s ON s.specialty_id = ds.specialty_id
-    JOIN shift_type st ON st.shift_type_id = ds.shift_type_id
-    WHERE ds.doctor_id = $1 AND ds.is_active
-    ORDER BY array_position(ARRAY['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']::varchar[], ds.day_of_week)
-    `,
-    [employeeId]
-  );
+  const schedule = await getWeeklySchedule(employeeId);
 
   const nurse = await pool.query(
     `
@@ -119,7 +125,7 @@ staffProfileRouter.get("/api/staff/:id/profile", async (req, res) => {
 
   res.json({
     ...employee.rows[0],
-    doctor: doctor.rows[0] ? { ...doctor.rows[0], specialties: specialties.rows, schedule: schedule.rows } : null,
+    doctor: doctor.rows[0] ? { ...doctor.rows[0], specialties: specialties.rows, schedule } : null,
     nurse: nurse.rows[0] ?? null,
     certificates: certificates.rows,
   });

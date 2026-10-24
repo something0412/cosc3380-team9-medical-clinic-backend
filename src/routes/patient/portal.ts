@@ -2,32 +2,14 @@ import { Router } from "express";
 import { CLINIC_TODAY } from "../../lib/clinicTime.js";
 import { pool } from "../../lib/db.js";
 import { getOutstandingBalance, getPatientBilling } from "../../services/billing.js";
+import { listAppointments } from "../../services/booking.js";
 
 export const patientPortalRouter = Router();
 
+// the same appointment list the staff see, with the date and time names this page already uses
 patientPortalRouter.get("/api/patient/:id/appointments", async (req, res) => {
-    const patientId = Number(req.params.id);
-
-    const result = await pool.query(
-        `
-        SELECT
-            a.appointment_id AS "appointmentId",
-            a.appointment_date AS "appointmentDate",
-            t.start_time AS "appointmentTime",
-            CONCAT(e.first_name, ' ', e.last_name) AS "doctorName",
-            s.name AS "specialty",
-            a.status
-        FROM appointment a
-        JOIN employee e ON a.doctor_id = e.employee_id
-        LEFT JOIN time_slot t ON a.time_slot_id = t.time_slot_id
-        LEFT JOIN specialty s ON a.specialty_id = s.specialty_id
-        WHERE a.patient_id = $1
-        ORDER BY a.appointment_date DESC, t.start_time DESC
-        `,
-        [patientId]
-    );
-
-    res.json(result.rows);
+    const appointments = await listAppointments({ patientId: Number(req.params.id) }, { when: "all" });
+    res.json(appointments.map((a) => ({ ...a, appointmentDate: a.date, appointmentTime: a.startTime })));
 });
 
 
@@ -41,7 +23,7 @@ patientPortalRouter.get("/api/patient/:id/forms", async (req, res) => {
             f.name,
             f.is_required AS "isRequired",
             fs.status,
-            fs.submitted_date AS "submittedDate"
+            to_char(fs.submitted_date, 'YYYY-MM-DD') AS "submittedDate"
         FROM form_type f
         LEFT JOIN LATERAL (
             SELECT
@@ -77,7 +59,7 @@ patientPortalRouter.get("/api/patient/:id/records", async (req, res) => {
         `
         SELECT
             a.appointment_id AS "appointmentId",
-            a.appointment_date AS "visitDate",
+            to_char(a.appointment_date, 'YYYY-MM-DD') AS "visitDate",
             -- a visit can have several diagnoses, null when none are recorded
             (
                 SELECT string_agg(d.name, ', ' ORDER BY d.created_at, d.visit_diagnosis_id)
@@ -116,7 +98,7 @@ patientPortalRouter.get("/api/patient/:id/records", async (req, res) => {
         SELECT
             l.lab_order_id AS "labOrderId",
             t.name AS "testName",
-            l.order_date AS "orderDate",
+            to_char(l.order_date, 'YYYY-MM-DD') AS "orderDate",
             l.result_notes AS "resultNotes"
         FROM lab_order l
         JOIN lab_test_type t ON l.lab_test_type_id = t.lab_test_type_id

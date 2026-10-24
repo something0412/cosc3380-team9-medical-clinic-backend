@@ -54,7 +54,7 @@ database/               schema snapshot and migrations
 tests/                  backend tests
 ```
 
-Most route files write their full `/api/...` paths and are mounted in `app.ts`. The public website routes are under `/api/public` and the admin routes are under `/api/admin`. The doctor, nurse, and lab routes work except the doctor's weekly schedule and the nurse supply routes. Most receptionist routes are still unfinished, but the receptionist patient and appointment routes work.
+Most route files write their full `/api/...` paths and are mounted in `app.ts`. The public website routes are under `/api/public` and the admin routes are under `/api/admin`. Every role's routes work.
 
 ## Writing routes
 
