@@ -7,6 +7,7 @@ Tests must never run against the shared Supabase database. They only use `TEST_D
 ## What's covered
 
 - `auth.test.ts` covers staff and patient login, logout, inactive and disabled logins, and Admin only access for every Admin endpoint.
+- `admin/employeeManagement.test.ts` covers the Staff page using the same employee rules, partial edits, deactivation with upcoming appointments, office moves, role changes, specialties, requests at the same time, and Admin only access.
 - `admin/employees.test.ts` covers the employee directory, creating and editing employees, doctor and nurse details, and account management.
 - `admin/offices.test.ts` covers the office directory, creating and editing offices, validation, and activation rules.
 - `admin/specialties.test.ts` covers the specialty directory, creating and editing specialties, the referral rule, and activation rules.
