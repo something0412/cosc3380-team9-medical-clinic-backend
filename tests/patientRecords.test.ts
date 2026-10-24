@@ -272,6 +272,8 @@ describe("front desk patient view", () => {
       [a, b, c]
     );
     await app.db.query(`INSERT INTO payment (invoice_id, payment_type_id, handled_by, amount_paid) SELECT invoice_id, 1, 4, 30.00 FROM invoice WHERE appointment_id = $1`, [a]);
+    // the Paid invoice really was paid, since the balance comes from payments and not the status
+    await app.db.query(`INSERT INTO payment (invoice_id, payment_type_id, handled_by, amount_paid) SELECT invoice_id, 1, 4, 50.00 FROM invoice WHERE appointment_id = $1`, [b]);
 
     const res = await receptionist.get(desk(ids.patient));
     assert.equal(res.status, 200);
