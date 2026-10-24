@@ -4,6 +4,7 @@ import { z, ZodError } from "zod";
 import { pool } from "../lib/db.js";
 import { HttpError } from "../middleware/errorHandler.js";
 import { findAvailability } from "../services/booking.js";
+import { bookingDate } from "./booking.js";
 
 // read only clinic information for the public website, no login required
 export const publicRouter = Router();
@@ -168,7 +169,7 @@ publicRouter.get("/specialties", async (_req, res) => {
 
 const availabilityQuery = z.object({
   specialtyId: idParam,
-  date: z.iso.date("Date must look like 2026-11-10"),
+  date: bookingDate,
   days: z.coerce.number().int().min(1).max(14, "Search up to 14 days at a time").default(1),
   doctorId: idParam.optional(),
   officeId: idParam.optional(),

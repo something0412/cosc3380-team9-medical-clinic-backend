@@ -339,6 +339,30 @@ describe("public availability", () => {
     }
   });
 
+  test("year 0 dates are turned away before they reach the database", async () => {
+    for (const date of ["0000-01-01", "0000-02-29", "0000-12-31"]) {
+      const responses = [
+        await publicSearch(anonymous, { specialtyId: family, date }),
+        await availability(pat, { specialtyId: family, date }),
+        await book(pat, { doctorId: DOCTOR.fay, specialtyId: family, date, timeSlotId: SLOT.m0800 }),
+      ];
+      for (const res of responses) {
+        assert.equal(res.status, 400, `${date}: ${JSON.stringify(res.body)}`);
+        assert.equal(res.body.error, "Date must look like 2026-11-10");
+      }
+    }
+
+    // the first and last dates zod allows still reach the scheduling rules
+    for (const date of ["0001-01-01", "9999-12-31"]) {
+      assert.equal((await publicSearch(anonymous, { specialtyId: family, date, days: 14 })).status, 200, date);
+      assert.equal((await availability(pat, { specialtyId: family, date, days: 14 })).status, 200, date);
+    }
+    assert.deepEqual(await publicSlots({ specialtyId: family, date: "0001-01-01", days: 14 }), []);
+    const past = await book(pat, { doctorId: DOCTOR.fay, specialtyId: family, date: "0001-01-01", timeSlotId: SLOT.m0800 });
+    assert.equal(past.status, 409);
+    assert.equal(past.body.error, "Appointments must be booked for a future time");
+  });
+
   test("checks the day range and every ID", async () => {
     const dates = async (days?: number) => {
       const res = await publicSearch(anonymous, { specialtyId: family, date: day(7), doctorId: DOCTOR.fay, ...(days ? { days } : {}) });
