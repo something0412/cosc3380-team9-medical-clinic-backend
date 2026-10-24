@@ -1,102 +1,31 @@
 import { Router } from "express";
+import type { Request } from "express";
+import { z } from "zod";
 import { pool } from "../../lib/db.js";
+import { HttpError } from "../../middleware/errorHandler.js";
+import { assertDoctorCanSeePatient, getPatientChart, listDoctorPatients } from "../../services/clinical.js";
 
 export const doctorPatientsRouter = Router();
 
-// get my patients (assigned, booked, referred to me, or I ordered labs for)
+const idParam = z.coerce.number("Choose a patient").int("Choose a patient").positive("Choose a patient");
+
+function me(req: Request) {
+  if (req.user?.role !== "doctor") throw new HttpError(401, "Login required");
+  return req.user.employeeId;
+}
+
+// get my patients (assigned to me or with a booked or finished visit)
 doctorPatientsRouter.get("/api/doctor/patients", async (req, res) => {
-  const doctorId = req.session.employeeId;
-  const search = String(req.query.search ?? "").trim();
-
-  // get the doctor's patients, matching the searched name
-  const result = await pool.query(
-    ``,
-    [doctorId, search]
-  );
-
-  res.json(result.rows);
+  const { search } = z.object({ search: z.string().trim().max(100).default("") }).parse(req.query);
+  res.json(await listDoctorPatients(me(req), search));
 });
 
 // get one patient's chart
 doctorPatientsRouter.get("/api/doctor/patients/:id", async (req, res) => {
-  const doctorId = req.session.employeeId;
-  const patientId = Number(req.params.id);
-
-  // check this is one of the doctor's patients
-  const access = await pool.query(
-    ``,
-    [doctorId, patientId]
-  );
-  if (access.rowCount === 0) {
-    res.status(403).json({ error: "This patient isn't under your care" });
-    return;
-  }
-
-  // get the patient's basic info
-  const patient = await pool.query(
-    ``,
-    [patientId]
-  );
-
-  // get the patient's allergies
-  const allergies = await pool.query(
-    ``,
-    [patientId]
-  );
-
-  // get the medicines the patient takes at home
-  const homeMedications = await pool.query(
-    ``,
-    [patientId]
-  );
-
-  // get the patient's last 10 vitals, marked normal, abnormal or critical
-  const vitals = await pool.query(
-    ``,
-    [patientId]
-  );
-
-  // get the patient's past and upcoming visits
-  const visits = await pool.query(
-    ``,
-    [patientId]
-  );
-
-  // get the patient's lab orders
-  const labOrders = await pool.query(
-    ``,
-    [patientId]
-  );
-
-  // get the patient's current prescriptions
-  const prescriptions = await pool.query(
-    ``,
-    [patientId]
-  );
-
-  // get the patient's insurance
-  const insurance = await pool.query(
-    ``,
-    [patientId]
-  );
-
-  // get the required forms the patient still hasn't filled out
-  const missingForms = await pool.query(
-    ``,
-    [patientId]
-  );
-
-  res.json({
-    ...patient.rows[0],
-    insurance: insurance.rows[0] ?? null,
-    missingForms: missingForms.rows.map((f) => f.name),
-    allergies: allergies.rows,
-    homeMedications: homeMedications.rows,
-    vitals: vitals.rows,
-    visits: visits.rows,
-    labOrders: labOrders.rows,
-    prescriptions: prescriptions.rows,
-  });
+  const doctorId = me(req);
+  const patientId = idParam.parse(req.params.id);
+  await assertDoctorCanSeePatient(doctorId, patientId);
+  res.json(await getPatientChart(patientId, doctorId));
 });
 
 // get allergy types for the allergy form

@@ -46,13 +46,14 @@ src/
   services/patients.ts  shared patient rules for sign up, the front desk, profiles, and Admin
   services/referrals.ts referral rules for doctors and the patient portal
   services/billing.ts   invoices, payments, and the balance every billing view uses
+  services/clinical.ts  patient charts, visit summaries, and diagnoses
   middleware/           signed in user check, error handler, and role checks
   lib/                  database pool, transactions, password hashing, and clinic time
 database/               schema snapshot and migrations
 tests/                  backend tests
 ```
 
-Most route files write their full `/api/...` paths and are mounted in `app.ts`. The public website routes are under `/api/public` and the admin routes are under `/api/admin`. Most doctor, nurse, and receptionist routes are still unfinished, but the receptionist patient and appointment routes, the doctor and nurse appointment lists, and doctor referrals work.
+Most route files write their full `/api/...` paths and are mounted in `app.ts`. The public website routes are under `/api/public` and the admin routes are under `/api/admin`. The doctor routes work except allergies, home medications, and the weekly schedule. Most nurse and receptionist routes are still unfinished, but the receptionist patient and appointment routes and the nurse appointment list work.
 
 ## Writing routes
 
@@ -64,6 +65,7 @@ Most route files write their full `/api/...` paths and are mounted in `app.ts`. 
 - Booking, check in, check out, No Show, and the staff appointment lists go through `src/services/booking.ts`. Don't add separate scheduling checks.
 - Creating, approving, denying, and listing referrals go through `src/services/referrals.ts`. Booking still decides whether a referral can be used for an appointment.
 - Invoices, payments, and balances go through `src/services/billing.ts`. Only admins create invoices or record payments.
+- Patient charts, visit summaries, and diagnoses go through `src/services/clinical.ts`. A doctor only sees the charts of patients they're assigned to or have a booked or finished visit with.
 - Patient sign up, front desk registration, portal logins, status, contact info, emergency contacts, and insurance go through `src/services/patients.ts`.
 
 ## Database

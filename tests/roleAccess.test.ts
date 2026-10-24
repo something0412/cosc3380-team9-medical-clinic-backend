@@ -89,6 +89,13 @@ const ENDPOINTS: Endpoint[] = [
   { label: "GET /api/doctor/appointments", path: fixed("/api/doctor/appointments?view=all"), expect: DOCTOR_ONLY },
   { label: "GET /api/doctor/referrals", path: fixed("/api/doctor/referrals"), expect: DOCTOR_ONLY },
   { label: "GET /api/doctor/specialists", path: fixed("/api/doctor/specialists"), expect: DOCTOR_ONLY },
+  { label: "GET /api/doctor/dashboard", path: fixed("/api/doctor/dashboard"), expect: DOCTOR_ONLY },
+  { label: "GET /api/doctor/patients", path: fixed("/api/doctor/patients"), expect: DOCTOR_ONLY },
+  { label: "GET /api/doctor/patients/1", path: fixed("/api/doctor/patients/1"), expect: DOCTOR_ONLY },
+  { label: "GET /api/doctor/appointments/1", path: fixed("/api/doctor/appointments/1"), expect: DOCTOR_ONLY },
+  { label: "GET /api/doctor/medications", path: fixed("/api/doctor/medications"), expect: DOCTOR_ONLY },
+  { label: "GET /api/doctor/lab-orders", path: fixed("/api/doctor/lab-orders"), expect: DOCTOR_ONLY },
+  { label: "GET /api/doctor/lab-tests", path: fixed("/api/doctor/lab-tests"), expect: DOCTOR_ONLY },
   { label: "GET /api/availability", path: fixed("/api/availability?date=2030-01-07"), expect: BOOKING },
   { label: "GET /api/appointments/1", path: fixed("/api/appointments/1"), expect: OWN_APPOINTMENT },
   ...PATIENT_SECTIONS.map((section) => ({
