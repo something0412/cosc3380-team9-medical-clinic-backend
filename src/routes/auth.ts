@@ -9,7 +9,7 @@ export const authRouter = Router();
 
 declare module "express-session" {
   interface SessionData {
-    role?: "patient" | "doctor" | "admin" | "staff";
+    role?: "patient" | "doctor" | "admin" | "staff" | "lab";
     patientId?: number;
     employeeId?: number;
     firstName?: string;
@@ -40,7 +40,7 @@ const staffLoginSchema = z.object({
 // start session
 async function startSession(
   req: Request,
-  role: "patient" | "doctor" | "admin" | "staff",
+  role: "patient" | "doctor" | "admin" | "staff" | "lab",
   id: number,
   firstName: string,
   lastName: string
@@ -160,6 +160,7 @@ authRouter.post("/api/auth/staff/login", async (req, res) => {
       CASE
         WHEN d.employee_id IS NOT NULL THEN 'doctor'
         WHEN t.type_name ILIKE 'admin%' THEN 'admin'
+        WHEN t.type_name = 'Lab Technician' THEN 'lab'
         ELSE 'staff'
       END AS role,
       c.password_hash AS "passwordHash"

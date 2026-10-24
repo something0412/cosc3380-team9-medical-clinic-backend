@@ -16,6 +16,8 @@ import { doctorPatientsRouter } from "./routes/doctor/doctorPatients.js";
 import { doctorReferralsRouter } from "./routes/doctor/doctorReferrals.js";
 import { doctorScheduleRouter } from "./routes/doctor/doctorSchedule.js";
 import { healthRouter } from "./routes/health.js";
+import { labDashboardRouter } from "./routes/lab/labDashboard.js";
+import { labOrdersRouter } from "./routes/lab/labOrders.js";
 import { patientProfileRouter } from "./routes/patient/patientProfile.js";
 import { patientsRouter } from "./routes/patient/patients.js";
 import { publicRouter } from "./routes/public.js";
@@ -103,6 +105,19 @@ app.use("/api/doctor", (req, res, next) => {
   next();
 });
 
+// lab portal: lab technicians only
+app.use("/api/lab", (req, res, next) => {
+  if (!req.session.role) {
+    res.status(401).json({ error: "Login required" });
+    return;
+  }
+  if (req.session.role !== "lab") {
+    res.status(403).json({ error: "Access denied" });
+    return;
+  }
+  next();
+});
+
 app.use(healthRouter);
 app.use(authRouter);
 app.use(doctorDashboardRouter);
@@ -111,6 +126,8 @@ app.use(doctorLabOrdersRouter);
 app.use(doctorReferralsRouter);
 app.use(doctorAppointmentsRouter);
 app.use(doctorScheduleRouter);
+app.use(labDashboardRouter);
+app.use(labOrdersRouter);
 app.use(patientsRouter);
 app.use(patientProfileRouter);
 app.use(staffProfileRouter);
