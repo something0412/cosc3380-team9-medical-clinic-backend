@@ -1535,6 +1535,14 @@ ALTER TABLE ONLY public.insurance
 
 
 --
+-- Name: invoice invoice_appointment_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice
+    ADD CONSTRAINT invoice_appointment_id_key UNIQUE (appointment_id);
+
+
+--
 -- Name: invoice invoice_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
