@@ -2,7 +2,7 @@
 
 Backend tests that run the real Express app against a local PostgreSQL test database.
 
-Tests must never run against the shared Supabase database. They only use `TEST_DATABASE_URL`, and they refuse to start unless it points to a local database whose name ends in `_test`.
+Tests must never run against the shared Supabase database. They only use `TEST_DATABASE_URL`, and they refuse to start unless it points to a local database whose name ends in `_test`. The test scripts load `tests/helpers/testDb.ts` before any test file, and every database pool checks that it points at that database before it connects.
 
 ## What's covered
 
@@ -18,8 +18,12 @@ Tests must never run against the shared Supabase database. They only use `TEST_D
 - `triggers.test.ts` covers the appointment history, employee audit, and appointment conflict triggers, plus row level security on the audit tables.
 - `profiles.test.ts` covers patient and staff profile updates, emergency contacts, insurance, certificates, password rules, ownership checks, and registration of every patient and staff route.
 - `sessions.test.ts` covers ending sessions for deactivated, disabled, and deleted accounts, and checks that role, staff type, and office changes apply on the next request.
+- `staffRoles.test.ts` covers lab technician sign in, sessions, role changes, and limits, and checks that the doctor, lab, nurse, and receptionist portals follow the database.
+- `patientRegistration.test.ts` covers online sign up, front desk registration, likely duplicates, shared family emails, portal logins for existing patients, simultaneous requests, and rollback.
+- `patientRecords.test.ts` covers patient status, contact info, emergency contacts, insurance, the front desk patient view and forms, and what the patient directory shows.
 - `errors.test.ts` covers the shared error handler, including safe responses for database errors that would otherwise show private details.
 - `clinicTime.test.ts` checks the patient dashboard and certificate status against the Chicago date while the database date is a day off, and that No Show visits aren't counted as upcoming.
+- `testDatabaseGuard.test.ts` checks that a pool pointed at any other database is refused before it connects, even when `src` code was imported first.
 - `roleAccess.test.ts` calls every GET endpoint as each role and checks the expected permissions. It saves what each role got back in `tests/output/role-access/`, which Git ignores.
 
 ## Setup
