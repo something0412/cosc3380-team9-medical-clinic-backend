@@ -28,7 +28,6 @@ const insuranceSchema = z.object({
   policyNumber: z.string().trim().min(1),
 });
 
-// get profile
 patientProfileRouter.get("/api/patient/:id/profile", async (req, res) => {
   const patientId = idParam.parse(req.params.id);
 
@@ -108,7 +107,6 @@ patientProfileRouter.put("/api/patient/:id/profile", async (req, res) => {
   res.status(204).end();
 });
 
-// add emergency contact
 patientProfileRouter.post("/api/patient/:id/emergency-contacts", async (req, res) => {
   const patientId = idParam.parse(req.params.id);
   const body = emergencyContactSchema.parse(req.body);
@@ -127,7 +125,6 @@ patientProfileRouter.post("/api/patient/:id/emergency-contacts", async (req, res
   res.status(201).end();
 });
 
-// update emergency contact
 patientProfileRouter.put("/api/patient/:id/emergency-contacts/:contactId", async (req, res) => {
   const patientId = idParam.parse(req.params.id);
   const contactId = idParam.parse(req.params.contactId);
@@ -149,7 +146,7 @@ patientProfileRouter.put("/api/patient/:id/emergency-contacts/:contactId", async
   res.status(204).end();
 });
 
-// remove emergency contact
+// contacts are deactivated rather than deleted
 patientProfileRouter.delete("/api/patient/:id/emergency-contacts/:contactId", async (req, res) => {
   const patientId = idParam.parse(req.params.id);
   const contactId = idParam.parse(req.params.contactId);
@@ -163,7 +160,6 @@ patientProfileRouter.delete("/api/patient/:id/emergency-contacts/:contactId", as
   res.status(204).end();
 });
 
-// update insurance
 patientProfileRouter.put("/api/patient/:id/insurance", async (req, res) => {
   const patientId = idParam.parse(req.params.id);
   const body = insuranceSchema.parse(req.body);
@@ -187,7 +183,6 @@ patientProfileRouter.put("/api/patient/:id/insurance", async (req, res) => {
   res.status(204).end();
 });
 
-// change password
 patientProfileRouter.put("/api/patient/:id/password", async (req, res) => {
   const patientId = idParam.parse(req.params.id);
   const { currentPassword, newPassword } = passwordChangeSchema.parse(req.body);

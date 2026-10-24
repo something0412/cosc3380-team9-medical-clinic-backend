@@ -1,9 +1,9 @@
 import { Router } from "express";
+import { CLINIC_TODAY } from "../../lib/clinicTime.js";
 import { pool } from "../../lib/db.js";
 
 export const patientPortalRouter = Router();
 
-// get patient appointments
 patientPortalRouter.get("/api/patient/:id/appointments", async (req, res) => {
     const patientId = Number(req.params.id);
 
@@ -30,7 +30,6 @@ patientPortalRouter.get("/api/patient/:id/appointments", async (req, res) => {
 });
 
 
-// get patient forms
 patientPortalRouter.get("/api/patient/:id/forms", async (req, res) => {
     const patientId = Number(req.params.id);
 
@@ -64,7 +63,6 @@ patientPortalRouter.get("/api/patient/:id/forms", async (req, res) => {
 });
 
 
-// get patient billing information
 patientPortalRouter.get("/api/patient/:id/billing", async (req, res) => {
     const patientId = Number(req.params.id);
 
@@ -106,7 +104,6 @@ patientPortalRouter.get("/api/patient/:id/billing", async (req, res) => {
 });
 
 
-// get patient medical records
 patientPortalRouter.get("/api/patient/:id/records", async (req, res) => {
     const patientId = Number(req.params.id);
 
@@ -171,7 +168,6 @@ patientPortalRouter.get("/api/patient/:id/records", async (req, res) => {
 });
 
 
-// get patient dashboard summary
 patientPortalRouter.get("/api/patient/:id/dashboard", async (req, res) => {
     const patientId = Number(req.params.id);
 
@@ -180,9 +176,9 @@ patientPortalRouter.get("/api/patient/:id/dashboard", async (req, res) => {
         SELECT COUNT(*)::int AS total
         FROM appointment
         WHERE patient_id = $1
-          AND appointment_date >= CURRENT_DATE
+          AND appointment_date >= ${CLINIC_TODAY}
           AND LOWER(COALESCE(status, '')) NOT IN
-              ('cancelled', 'completed', 'no-show')
+              ('cancelled', 'completed', 'no show')
         `,
         [patientId]
     );

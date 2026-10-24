@@ -65,7 +65,6 @@ adminSpecialtiesRouter.get("/", async (_req, res) => {
   res.json(result.rows);
 });
 
-// one specialty with its doctor and schedule counts
 adminSpecialtiesRouter.get("/:id", async (req, res) => {
   const specialty = await loadSpecialty(idParam.parse(req.params.id));
   if (!specialty) throw new HttpError(404, "Specialty not found");
