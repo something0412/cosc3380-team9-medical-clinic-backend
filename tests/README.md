@@ -21,6 +21,8 @@ Tests must never run against the shared Supabase database. They only use `TEST_D
 - `referrals.test.ts` covers creating, approving, denying, and listing referrals, decisions at the same time, and booking with referrals.
 - `billing.test.ts` covers creating invoices, recording payments, balances in every billing view, requests at the same time, rollback, Admin only access, and migration 009.
 - `doctorClinical.test.ts` covers which patients a doctor can see, charts, the dashboard, visit summaries, diagnoses, prescriptions, lab orders, and requests at the same time.
+- `workflows.test.ts` follows one patient from sign up through booking, check in, vitals, the doctor's notes, a lab result, a referral, and a paid bill, and checks that every role sees the same records.
+- `nurseSupplies.test.ts` covers office stock, using supplies, ordering and receiving, requests at the same time, rollback, and nurse only access.
 - `nurseLabClinical.test.ts` covers which patients a nurse can see, vitals, nursing notes, allergies and home medications for doctors and nurses, lab processing and results, and requests at the same time.
 - `triggers.test.ts` covers the appointment history, employee audit, and appointment conflict triggers, plus row level security on the audit tables.
 - `profiles.test.ts` covers patient and staff profile updates, emergency contacts, insurance, certificates, password rules, ownership checks, and registration of every patient and staff route.
