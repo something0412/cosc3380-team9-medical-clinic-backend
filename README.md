@@ -50,7 +50,7 @@ database/              schema snapshot and migrations
 tests/                 backend tests
 ```
 
-Most route files write their full `/api/...` paths and are mounted in `app.ts`. The public website routes are under `/api/public` and the admin routes are under `/api/admin`. Most doctor, nurse, and receptionist routes are still unfinished, but the receptionist patient routes work.
+Most route files write their full `/api/...` paths and are mounted in `app.ts`. The public website routes are under `/api/public` and the admin routes are under `/api/admin`. Most doctor, nurse, and receptionist routes are still unfinished, but the receptionist patient and appointment routes and the doctor and nurse appointment lists work.
 
 ## Writing routes
 
@@ -59,7 +59,7 @@ Most route files write their full `/api/...` paths and are mounted in `app.ts`. 
 - Alias columns to camelCase in the SQL, like `first_name AS "firstName"`.
 - Throw `new HttpError(404, "Appointment not found")` for expected errors. Anything unexpected becomes a generic 500 without database details.
 - Use `CLINIC_TODAY` and `CLINIC_NOW` from `src/lib/clinicTime.ts` for clinic dates. The database runs on UTC, so `CURRENT_DATE` can already be tomorrow in Chicago.
-- Booking goes through `src/services/booking.ts`. Don't add separate scheduling checks.
+- Booking, check in, check out, No Show, and the staff appointment lists go through `src/services/booking.ts`. Don't add separate scheduling checks.
 - Patient sign up, front desk registration, portal logins, status, contact info, emergency contacts, and insurance go through `src/services/patients.ts`.
 
 ## Database

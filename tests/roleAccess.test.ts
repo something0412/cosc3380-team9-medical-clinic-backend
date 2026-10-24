@@ -49,6 +49,8 @@ const LOGGED_IN = { anonymous: 401, patient: 200, doctor: 200, nurse: 200, recep
 const RECEPTIONIST_DIRECTORY = { anonymous: 401, patient: 401, doctor: 403, nurse: 403, receptionist: 200, admin: 403, lab: 403 };
 const RECEPTIONIST_ONLY = { anonymous: 401, patient: 403, doctor: 403, nurse: 403, receptionist: 200, admin: 403, lab: 403 };
 const LAB_ONLY = { anonymous: 401, patient: 403, doctor: 403, nurse: 403, receptionist: 403, admin: 403, lab: 200 };
+const NURSE_ONLY = { anonymous: 401, patient: 403, doctor: 403, nurse: 200, receptionist: 403, admin: 403, lab: 403 };
+const DOCTOR_ONLY = { anonymous: 401, patient: 403, doctor: 200, nurse: 403, receptionist: 403, admin: 403, lab: 403 };
 const OWN_PATIENT = { anonymous: 401, patient: 200, doctor: 401, nurse: 401, receptionist: 401, admin: 401, lab: 401 };
 const OTHER_PATIENT_DATA = { anonymous: 401, patient: 403, doctor: 401, nurse: 401, receptionist: 401, admin: 401, lab: 401 };
 const OWN_STAFF = { anonymous: 401, patient: 401, doctor: 200, nurse: 200, receptionist: 200, admin: 200, lab: 200 };
@@ -82,6 +84,9 @@ const ENDPOINTS: Endpoint[] = [
   { label: "GET /api/receptionist/patients/1", path: fixed(`/api/receptionist/patients/${ids.patient}`), expect: RECEPTIONIST_ONLY },
   { label: "GET /api/lab/dashboard", path: fixed("/api/lab/dashboard"), expect: LAB_ONLY },
   { label: "GET /api/lab/orders", path: fixed("/api/lab/orders"), expect: LAB_ONLY },
+  { label: "GET /api/receptionist/appointments", path: fixed("/api/receptionist/appointments"), expect: RECEPTIONIST_ONLY },
+  { label: "GET /api/nurse/appointments", path: fixed("/api/nurse/appointments"), expect: NURSE_ONLY },
+  { label: "GET /api/doctor/appointments", path: fixed("/api/doctor/appointments?view=all"), expect: DOCTOR_ONLY },
   { label: "GET /api/availability", path: fixed("/api/availability?date=2030-01-07"), expect: BOOKING },
   { label: "GET /api/appointments/1", path: fixed("/api/appointments/1"), expect: OWN_APPOINTMENT },
   ...PATIENT_SECTIONS.map((section) => ({
