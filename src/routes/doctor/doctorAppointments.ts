@@ -1,21 +1,25 @@
 import { Router } from "express";
+import { z } from "zod";
 import { pool } from "../../lib/db.js";
+import { HttpError } from "../../middleware/errorHandler.js";
+import { listAppointments } from "../../services/booking.js";
+import { bookingDate } from "../booking.js";
 
 export const doctorAppointmentsRouter = Router();
 
-// get my appointments (today, upcoming, past, or all)
+const listQuery = z.object({
+  view: z.enum(["today", "upcoming", "past", "all"], "View must be today, upcoming, past or all").default("today"),
+  date: bookingDate.optional(),
+  search: z.string().trim().max(100).default(""),
+});
+
+// get my appointments for today, upcoming, past or all, or for one date
 doctorAppointmentsRouter.get("/api/doctor/appointments", async (req, res) => {
-  const doctorId = req.session.employeeId;
-  const view = String(req.query.view ?? "today");
-  const search = String(req.query.search ?? "").trim();
+  if (!req.user || req.user.role !== "doctor") throw new HttpError(401, "Login required");
+  const { view, date, search } = listQuery.parse(req.query);
 
   // get the doctor's appointments for the chosen tab, matching the searched patient name
-  const result = await pool.query(
-    ``,
-    [doctorId, view, search]
-  );
-
-  res.json(result.rows);
+  res.json(await listAppointments({ doctorId: req.user.employeeId }, { when: view, date, search }));
 });
 
 // get one visit with everything needed to see the patient
