@@ -197,8 +197,8 @@ export interface AppointmentListFilter {
   includeCancelled?: boolean;
 }
 
-// every staff list goes through here, scoped to one office or one doctor so there's no list of every appointment
-export async function listAppointments(scope: { officeId: number } | { doctorId: number }, filter: AppointmentListFilter = {}) {
+// every appointment list goes through here, scoped to one office, one doctor or one patient so there's no list of every appointment
+export async function listAppointments(scope: { officeId: number } | { doctorId: number } | { patientId: number }, filter: AppointmentListFilter = {}) {
   const when = filter.date ? null : (filter.when ?? "today");
   const result = await pool.query(
     `
@@ -215,6 +215,7 @@ export async function listAppointments(scope: { officeId: number } | { doctorId:
         OR $4 = 'all')
       AND ($5 = '' OR p.first_name || ' ' || p.last_name ILIKE '%' || $5 || '%' ESCAPE '\\')
       AND ($6 OR a.status <> 'Cancelled')
+      AND ($7::int IS NULL OR a.patient_id = $7)
     ORDER BY CASE WHEN $4 IN ('past', 'all') THEN a.appointment_date END DESC, a.appointment_date, ts.start_time, a.appointment_id
     `,
     [
@@ -225,6 +226,7 @@ export async function listAppointments(scope: { officeId: number } | { doctorId:
       // a typed % or _ is part of the name, not a wildcard
       (filter.search ?? "").replace(/[\\%_]/g, (character) => `\\${character}`),
       filter.includeCancelled ?? true,
+      "patientId" in scope ? scope.patientId : null,
     ]
   );
   return result.rows;
