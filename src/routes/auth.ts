@@ -2,31 +2,23 @@ import { Router } from "express";
 import type { Request } from "express";
 import { z } from "zod";
 import { pool } from "../lib/db.js";
-import { hashPassword, verifyPassword } from "../lib/password.js";
+import { verifyPassword } from "../lib/password.js";
 import { HttpError } from "../middleware/errorHandler.js";
 import { EMPLOYEE_ROLE_SQL } from "../middleware/sessionUser.js";
+import type { Role } from "../middleware/sessionUser.js";
+import { signUpPatient, signupSchema } from "../services/patients.js";
 
 export const authRouter = Router();
 
 declare module "express-session" {
   interface SessionData {
-    role?: "patient" | "doctor" | "admin" | "staff" | "lab";
+    role?: Role;
     patientId?: number;
     employeeId?: number;
-    employeeType?: string;
     firstName?: string;
     lastName?: string;
   }
 }
-
-const signupSchema = z.object({
-  firstName: z.string().trim().min(1),
-  lastName: z.string().trim().min(1),
-  dob: z.iso.date(),
-  phone: z.string().trim().min(1),
-  email: z.email().trim().toLowerCase(),
-  password: z.string().min(8),
-});
 
 const patientLoginSchema = z.object({
   patientId: z.coerce.number().int().positive(),
@@ -39,14 +31,7 @@ const staffLoginSchema = z.object({
   password: z.string().min(1),
 });
 
-async function startSession(
-  req: Request,
-  role: "patient" | "doctor" | "admin" | "staff" | "lab",
-  id: number,
-  firstName: string,
-  lastName: string,
-  employeeType?: string
-) {
+async function startSession(req: Request, role: Role, id: number, firstName: string, lastName: string) {
   await new Promise<void>((resolve, reject) => {
     req.session.regenerate((error) => {
       if (error) return reject(error);
@@ -58,7 +43,6 @@ async function startSession(
         req.session.patientId = id;
       } else {
         req.session.employeeId = id;
-        req.session.employeeType = employeeType;
       }
 
       req.session.save((saveError) => {
@@ -71,48 +55,10 @@ async function startSession(
 
 authRouter.post("/api/auth/patient/signup", async (req, res) => {
   const body = signupSchema.parse(req.body);
-  const passwordHash = await hashPassword(body.password);
-  const client = await pool.connect();
-  let createdPatient: {
-    patientId: number;
-    firstName: string;
-    lastName: string;
-    email: string;
-  };
+  const { patientId, firstName, lastName, email } = await signUpPatient(body);
 
-  try {
-    await client.query("BEGIN");
-
-    const existing = await client.query(`SELECT 1 FROM patient_creds WHERE username = $1`, [body.email]);
-    if (existing.rowCount) {
-      throw new HttpError(409, "An account with this email already exists");
-    }
-
-    const patient = await client.query(
-      `
-      INSERT INTO patient (first_name, last_name, dob, phone, email)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING patient_id AS "patientId", first_name AS "firstName", last_name AS "lastName", email
-      `,
-      [body.firstName, body.lastName, body.dob, body.phone, body.email]
-    );
-
-    await client.query(
-      `INSERT INTO patient_creds (patient_id, username, password_hash) VALUES ($1, $2, $3)`,
-      [patient.rows[0].patientId, body.email, passwordHash]
-    );
-
-    createdPatient = patient.rows[0];
-    await client.query("COMMIT");
-  } catch (err) {
-    await client.query("ROLLBACK");
-    throw err;
-  } finally {
-    client.release();
-  }
-
-  await startSession(req, "patient", createdPatient.patientId, createdPatient.firstName, createdPatient.lastName);
-  res.status(201).json(createdPatient);
+  await startSession(req, "patient", patientId, firstName, lastName);
+  res.status(201).json({ patientId, firstName, lastName, email });
 });
 
 authRouter.post("/api/auth/patient/login", async (req, res) => {
@@ -175,7 +121,7 @@ authRouter.post("/api/auth/staff/login", async (req, res) => {
     throw new HttpError(401, "Invalid staff ID or password");
   }
 
-  await startSession(req, row.role, row.employeeId, row.firstName, row.lastName, row.employeeType);
+  await startSession(req, row.role, row.employeeId, row.firstName, row.lastName);
 
   const { passwordHash: _, ...employee } = row;
   res.json(employee);
@@ -188,7 +134,13 @@ authRouter.get("/api/auth/me", (req, res) => {
     res.status(401).json({ error: "Not logged in" });
     return;
   }
-  res.json({ role: user.role, id: user.role === "patient" ? user.patientId : user.employeeId, firstName: user.firstName, lastName: user.lastName });
+  if (user.role === "patient") {
+    res.json({ role: user.role, id: user.patientId, firstName: user.firstName, lastName: user.lastName });
+    return;
+  }
+  // employee details come from the database on this request, never from the session
+  const { role, employeeId, firstName, lastName, employeeType, staffType, officeId } = user;
+  res.json({ role, id: employeeId, firstName, lastName, employeeType, staffType, officeId });
 });
 
 authRouter.post("/api/auth/logout", (req, res, next) => {

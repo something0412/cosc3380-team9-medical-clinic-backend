@@ -6,7 +6,7 @@ import session from "express-session";
 import { randomBytes } from "node:crypto";
 
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
-import { requireRole } from "./middleware/requireRole.js";
+import { requireRole, requireStaffType } from "./middleware/requireRole.js";
 import { loadSessionUser } from "./middleware/sessionUser.js";
 import { adminRouter } from "./routes/admin/index.js";
 import { authRouter } from "./routes/auth.js";
@@ -65,11 +65,11 @@ app.use(loadSessionUser);
 
 // only the logged in patient can use their patient portal
 app.use("/api/patient/:id", (req, res, next) => {
-  if (req.session.role !== "patient") {
+  if (req.user?.role !== "patient") {
     res.status(401).json({ error: "Patient login required" });
     return;
   }
-  if (req.session.patientId !== Number(req.params.id)) {
+  if (req.user.patientId !== Number(req.params.id)) {
     res.status(403).json({ error: "Access denied" });
     return;
   }
@@ -78,77 +78,41 @@ app.use("/api/patient/:id", (req, res, next) => {
 
 // only the logged in employee can use their staff profile
 app.use("/api/staff/:id", (req, res, next) => {
-  if (!req.session.role || req.session.role === "patient") {
+  if (!req.user || req.user.role === "patient") {
     res.status(401).json({ error: "Staff login required" });
     return;
   }
-  if (req.session.employeeId !== Number(req.params.id)) {
+  if (req.user.employeeId !== Number(req.params.id)) {
     res.status(403).json({ error: "Access denied" });
     return;
   }
   next();
 });
 
-// the patient list and registration are for staff only
+// the patient list and registration are for receptionists only
 app.use("/api/patients", (req, res, next) => {
-  if (!req.session.role || req.session.role === "patient") {
+  if (!req.user || req.user.role === "patient") {
     res.status(401).json({ error: "Staff login required" });
+    return;
+  }
+  if (req.user.staffType !== "receptionist") {
+    res.status(403).json({ error: "Access denied" });
     return;
   }
   next();
 });
 
 // doctor portal: doctors only
-app.use("/api/doctor", (req, res, next) => {
-  if (!req.session.role) {
-    res.status(401).json({ error: "Login required" });
-    return;
-  }
-  if (req.session.role !== "doctor") {
-    res.status(403).json({ error: "Access denied" });
-    return;
-  }
-  next();
-});
+app.use("/api/doctor", requireRole("doctor"));
 
 // lab portal: lab technicians only
-app.use("/api/lab", (req, res, next) => {
-  if (!req.session.role) {
-    res.status(401).json({ error: "Login required" });
-    return;
-  }
-  if (req.session.role !== "lab") {
-    res.status(403).json({ error: "Access denied" });
-    return;
-  }
-  next();
-});
+app.use("/api/lab", requireRole("lab"));
 
 // nurse portal: nurses only
-app.use("/api/nurse", (req, res, next) => {
-  if (!req.session.role) {
-    res.status(401).json({ error: "Login required" });
-    return;
-  }
-  if (req.session.role !== "staff" || req.session.employeeType !== "Nurse") {
-    res.status(403).json({ error: "Access denied" });
-    return;
-  }
-  next();
-});
+app.use("/api/nurse", requireStaffType("nurse"));
 
 // receptionist portal: receptionists only
-app.use("/api/receptionist", (req, res, next) => {
-  if (!req.session.role) {
-    res.status(401).json({ error: "Login required" });
-    return;
-  }
-  if (req.session.role !== "staff" || req.session.employeeType !== "Receptionist") {
-    res.status(403).json({ error: "Access denied" });
-    return;
-  }
-  next();
-});
+app.use("/api/receptionist", requireStaffType("receptionist"));
 
 app.use(healthRouter);
 app.use(authRouter);

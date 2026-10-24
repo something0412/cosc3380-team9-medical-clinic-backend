@@ -1,5 +1,21 @@
 import { Router } from "express";
+import { CLINIC_TODAY } from "../../lib/clinicTime.js";
 import { pool } from "../../lib/db.js";
+import { withTransaction } from "../../lib/transaction.js";
+import { HttpError } from "../../middleware/errorHandler.js";
+import {
+  addEmergencyContact,
+  contactInfoSchema,
+  createPortalLogin,
+  emergencyContactSchema,
+  getPatientProfile,
+  insuranceSchema,
+  insuranceStatusSchema,
+  portalLoginSchema,
+  saveInsurance,
+  setInsuranceStatus,
+  updateContactInfo,
+} from "../../services/patients.js";
 
 export const receptionistPatientsRouter = Router();
 
@@ -12,50 +28,73 @@ receptionistPatientsRouter.get("/api/receptionist/patients/:id", async (req, res
     return;
   }
 
-  // get the patient's basic info and whether they have a login
-  const patient = await pool.query(
-    ``,
-    [patientId]
-  );
-  if (patient.rowCount === 0) {
+  // get the patient's info, whether they have a login, their insurance and their active emergency contacts
+  const patient = await getPatientProfile(patientId);
+  if (!patient) {
     res.status(404).json({ error: "Patient not found" });
     return;
   }
 
-  // get the patient's insurance
-  const insurance = await pool.query(
-    ``,
-    [patientId]
-  );
-
-  // get the patient's active emergency contacts, primary first
-  const emergencyContacts = await pool.query(
-    ``,
-    [patientId]
-  );
-
   // get every active form and whether the patient completed it
   const forms = await pool.query(
-    ``,
+    `
+    SELECT
+      f.form_type_id AS "formTypeId",
+      f.name,
+      f.is_required AS "isRequired",
+      done.submitted_date IS NOT NULL AS completed,
+      to_char(done.submitted_date, 'YYYY-MM-DD') AS "completedDate"
+    FROM form_type f
+    LEFT JOIN LATERAL (
+      SELECT s.submitted_date
+      FROM form_submission s
+      WHERE s.form_type_id = f.form_type_id AND s.patient_id = $1 AND s.status = 'Completed'
+      ORDER BY s.submitted_date DESC
+      LIMIT 1
+    ) done ON true
+    WHERE f.is_active
+    ORDER BY f.form_type_id
+    `,
     [patientId]
   );
 
   // get the patient's 10 newest appointments at any office
   const appointments = await pool.query(
-    ``,
+    `
+    SELECT
+      a.appointment_id AS "appointmentId",
+      to_char(a.appointment_date, 'YYYY-MM-DD') AS "date",
+      to_char(ts.start_time, 'HH24:MI') AS "startTime",
+      to_char(ts.end_time, 'HH24:MI') AS "endTime",
+      e.first_name || ' ' || e.last_name AS "doctorName",
+      o.name AS "officeName",
+      sp.name AS "specialty",
+      a.status
+    FROM appointment a
+    JOIN time_slot ts ON ts.time_slot_id = a.time_slot_id
+    JOIN employee e ON e.employee_id = a.doctor_id
+    JOIN office o ON o.office_id = a.office_id
+    JOIN specialty sp ON sp.specialty_id = a.specialty_id
+    WHERE a.patient_id = $1
+    ORDER BY a.appointment_date DESC, ts.start_time DESC, a.appointment_id DESC
+    LIMIT 10
+    `,
     [patientId]
   );
 
   // get what the patient still owes on all unpaid invoices
   const balance = await pool.query(
-    ``,
+    `
+    SELECT COALESCE(SUM(GREATEST(i.amount - COALESCE(paid.total, 0), 0)), 0)::numeric(10, 2) AS balance
+    FROM invoice i
+    LEFT JOIN (SELECT invoice_id, SUM(amount_paid) AS total FROM payment GROUP BY invoice_id) paid ON paid.invoice_id = i.invoice_id
+    WHERE i.patient_id = $1 AND i.status <> 'Paid'
+    `,
     [patientId]
   );
 
   res.json({
-    ...patient.rows[0],
-    insurance: insurance.rows[0] ?? null,
-    emergencyContacts: emergencyContacts.rows,
+    ...patient,
     forms: forms.rows,
     appointments: appointments.rows,
     balance: balance.rows[0].balance,
@@ -65,124 +104,36 @@ receptionistPatientsRouter.get("/api/receptionist/patients/:id", async (req, res
 // update the patient's contact info (email is their login, so it stays)
 receptionistPatientsRouter.patch("/api/receptionist/patients/:id", async (req, res) => {
   const patientId = Number(req.params.id);
-  const phone = String(req.body.phone ?? "").trim();
-  const address = String(req.body.address ?? "").trim();
-  const gender = String(req.body.gender ?? "").trim();
-
-  if (!phone) {
-    res.status(400).json({ error: "Phone is required" });
-    return;
-  }
+  const info = contactInfoSchema.parse(req.body);
 
   // save the patient's phone, address and gender (empty saved as null)
-  const result = await pool.query(
-    ``,
-    [phone, address || null, gender || null, patientId]
-  );
-
-  if (result.rowCount === 0) {
-    res.status(404).json({ error: "Patient not found" });
-    return;
-  }
-
-  res.json(result.rows[0]);
+  res.json(await updateContactInfo(patientId, info));
 });
 
 // add or change the patient's insurance (it goes back to Pending)
 receptionistPatientsRouter.put("/api/receptionist/patients/:id/insurance", async (req, res) => {
   const patientId = Number(req.params.id);
-  const provider = String(req.body.provider ?? "").trim();
-  const policyNumber = String(req.body.policyNumber ?? "").trim();
+  const insurance = insuranceSchema.parse(req.body);
 
-  if (!provider || !policyNumber) {
-    res.status(400).json({ error: "Provider and policy number are required" });
-    return;
-  }
-
-  // check no other patient has this policy number
-  const taken = await pool.query(
-    ``,
-    [policyNumber, patientId]
-  );
-  if (taken.rowCount !== 0) {
-    res.status(409).json({ error: "This policy number belongs to another patient" });
-    return;
-  }
-
-  // add the insurance, or replace the one the patient has, as Pending
-  const result = await pool.query(
-    ``,
-    [patientId, provider, policyNumber]
-  );
-
-  res.json(result.rows[0]);
+  // a policy number that belongs to another patient is turned away
+  res.json(await saveInsurance(patientId, insurance));
 });
 
 // verify or deny the patient's insurance
 receptionistPatientsRouter.patch("/api/receptionist/patients/:id/insurance/status", async (req, res) => {
   const patientId = Number(req.params.id);
-  const status = req.body.status;
+  const review = insuranceStatusSchema.parse(req.body);
 
-  if (status !== "Verified" && status !== "Denied") {
-    res.status(400).json({ error: "Status must be Verified or Denied" });
-    return;
-  }
-
-  // save the patient's insurance status
-  const result = await pool.query(
-    ``,
-    [status, patientId]
-  );
-
-  if (result.rowCount === 0) {
-    res.status(404).json({ error: "This patient has no insurance on file" });
-    return;
-  }
-
-  res.json(result.rows[0]);
+  res.json(await setInsuranceStatus(patientId, review));
 });
 
 // add an emergency contact
 receptionistPatientsRouter.post("/api/receptionist/patients/:id/emergency-contacts", async (req, res) => {
   const patientId = Number(req.params.id);
-  const firstName = String(req.body.firstName ?? "").trim();
-  const lastName = String(req.body.lastName ?? "").trim();
-  const relationship = String(req.body.relationship ?? "").trim();
-  const phoneNumber = String(req.body.phoneNumber ?? "").trim();
-  const isPrimary = req.body.isPrimary === true;
-
-  if (!firstName || !lastName || !relationship || !phoneNumber) {
-    res.status(400).json({ error: "Name, relationship and phone are required" });
-    return;
-  }
+  const contact = emergencyContactSchema.parse(req.body);
 
   // save the contact and the primary flag together
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-
-    if (isPrimary) {
-      // take primary off the patient's other contacts
-      await client.query(
-        ``,
-        [patientId]
-      );
-    }
-
-    // add the emergency contact
-    const result = await client.query(
-      ``,
-      [patientId, firstName, lastName, relationship, phoneNumber, isPrimary]
-    );
-
-    await client.query("COMMIT");
-    res.status(201).json(result.rows[0]);
-  } catch (err) {
-    await client.query("ROLLBACK");
-    throw err;
-  } finally {
-    client.release();
-  }
+  res.status(201).json(await addEmergencyContact(patientId, contact));
 });
 
 // mark a paper form the patient signed at the desk as completed
@@ -190,26 +141,44 @@ receptionistPatientsRouter.post("/api/receptionist/patients/:id/forms/:formTypeI
   const patientId = Number(req.params.id);
   const formTypeId = Number(req.params.formTypeId);
 
-  // check the patient hasn't completed this form already
-  const done = await pool.query(
-    ``,
-    [patientId, formTypeId]
-  );
-  if (done.rowCount !== 0) {
-    res.status(400).json({ error: "This form is already completed" });
-    return;
-  }
+  const submission = await withTransaction(async (client) => {
+    // one at a time per patient, so a double click can't save the form twice
+    const patient = await client.query(`SELECT 1 FROM patient WHERE patient_id = $1 FOR NO KEY UPDATE`, [patientId]);
+    if (patient.rowCount === 0) throw new HttpError(404, "Patient not found");
 
-  // save a completed submission dated today (only for an active form)
-  const result = await pool.query(
-    ``,
-    [patientId, formTypeId]
-  );
+    // check the patient hasn't completed this form already
+    const done = await client.query(
+      `SELECT 1 FROM form_submission WHERE patient_id = $1 AND form_type_id = $2 AND status = 'Completed'`,
+      [patientId, formTypeId]
+    );
+    if (done.rowCount !== 0) throw new HttpError(400, "This form is already completed");
 
-  if (result.rowCount === 0) {
-    res.status(404).json({ error: "Form not found" });
-    return;
-  }
+    // save a completed submission dated today (only for an active form)
+    const result = await client.query(
+      `
+      INSERT INTO form_submission (patient_id, form_type_id, status, submitted_date)
+      SELECT $1, form_type_id, 'Completed', ${CLINIC_TODAY}
+      FROM form_type
+      WHERE form_type_id = $2 AND is_active
+      RETURNING
+        form_submission_id AS "formSubmissionId",
+        form_type_id AS "formTypeId",
+        status,
+        to_char(submitted_date, 'YYYY-MM-DD') AS "submittedDate"
+      `,
+      [patientId, formTypeId]
+    );
+    if (result.rowCount === 0) throw new HttpError(404, "Form not found");
+    return result.rows[0];
+  });
 
-  res.status(201).json(result.rows[0]);
+  res.status(201).json(submission);
+});
+
+// set up a portal login for a patient who registered at the desk, after checking their photo ID
+receptionistPatientsRouter.post("/api/receptionist/patients/:id/login", async (req, res) => {
+  const patientId = Number(req.params.id);
+  const login = portalLoginSchema.parse(req.body);
+
+  res.status(201).json(await createPortalLogin(patientId, login));
 });
