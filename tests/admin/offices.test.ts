@@ -23,7 +23,7 @@ async function createOffice(overrides: object = {}) {
   return res.body;
 }
 
-// rows that reference offices; office changes must leave them alone
+// rows that reference offices, which office changes must leave alone
 async function relatedSnapshot() {
   const { rows } = await app.db.query(`
     SELECT

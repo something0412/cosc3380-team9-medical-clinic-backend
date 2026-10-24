@@ -21,7 +21,7 @@ async function createSpecialty(name: string, requiresReferral = false) {
   return res.body;
 }
 
-// doctor assignments, schedules, appointments, and referrals; specialty changes must leave them alone
+// doctor assignments, schedules, appointments, and referrals, which specialty changes must leave alone
 async function relatedSnapshot() {
   const { rows } = await app.db.query(`
     SELECT
@@ -96,7 +96,7 @@ describe("creating and editing specialties", () => {
     assert.equal(renamed.body.requiresReferral, true);
     assert.equal(renamed.body.isActive, true);
 
-    // its own name in another case is fine; another specialty's name is not
+    // its own name in another case is fine, but another specialty's name is not
     assert.equal((await admin.put(`/api/admin/specialties/${created.specialtyId}`, { name: "sleep & neurology", requiresReferral: true })).status, 200);
     assert.equal((await admin.put(`/api/admin/specialties/${created.specialtyId}`, { name: "Family medicine", requiresReferral: true })).status, 409);
 

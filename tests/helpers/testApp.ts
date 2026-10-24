@@ -14,7 +14,7 @@ export async function startTestApp() {
   // imported here so testDb has already pointed DATABASE_URL at the test database
   const { app } = await import("../../src/app.js");
   const { pool } = await import("../../src/lib/db.js");
-  // Port URL is a local test server URL so its fine to be hard coded here and not stored in the .env
+  // this is a local test server URL, so it's fine to build it here instead of keeping it in .env
   const server = app.listen(0, "127.0.0.1");
   await once(server, "listening");
   const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -30,7 +30,7 @@ export async function startTestApp() {
     try {
       parsed = text ? JSON.parse(text) : null;
     } catch {
-      // keep non-JSON responses as text
+      // keep responses that aren't JSON as text
     }
     return { status: res.status, body: parsed, cookie: res.headers.getSetCookie()[0]?.split(";")[0] };
   }
@@ -43,6 +43,7 @@ export async function startTestApp() {
       post: (path: string, body?: unknown): Promise<TestResponse> => request("POST", path, cookie, body),
       put: (path: string, body?: unknown): Promise<TestResponse> => request("PUT", path, cookie, body),
       patch: (path: string, body?: unknown): Promise<TestResponse> => request("PATCH", path, cookie, body),
+      delete: (path: string): Promise<TestResponse> => request("DELETE", path, cookie),
     };
   }
 

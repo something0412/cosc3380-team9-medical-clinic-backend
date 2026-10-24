@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../../lib/db.js";
-import { hashPassword, verifyPassword } from "../../lib/password.js";
+import { hashPassword, passwordChangeSchema, verifyPassword } from "../../lib/password.js";
 import { HttpError } from "../../middleware/errorHandler.js";
 
 export const patientProfileRouter = Router();
@@ -26,11 +26,6 @@ const emergencyContactSchema = z.object({
 const insuranceSchema = z.object({
   provider: z.string().trim().min(1),
   policyNumber: z.string().trim().min(1),
-});
-
-export const passwordChangeSchema = z.object({
-  currentPassword: z.string().min(1),
-  newPassword: z.string().min(8),
 });
 
 // get profile

@@ -69,7 +69,7 @@ async function loadOffice(officeId: number) {
   return result.rows[0] ?? null;
 }
 
-// office directory; also used by the employee form dropdown
+// office directory, also used by the employee form dropdown
 adminOfficesRouter.get("/", async (_req, res) => {
   const result = await pool.query(`
     SELECT
@@ -96,7 +96,7 @@ adminOfficesRouter.get("/:id", async (req, res) => {
   res.json(office);
 });
 
-// create an office; new offices start active
+// create an office, which starts out active
 adminOfficesRouter.post("/", async (req, res) => {
   const body = officeSchema.parse(req.body);
 
@@ -112,7 +112,7 @@ adminOfficesRouter.post("/", async (req, res) => {
   res.status(201).json(await loadOffice(created.rows[0].officeId));
 });
 
-// update office details; active status is changed separately
+// update office details. Active status is changed separately
 adminOfficesRouter.put("/:id", async (req, res) => {
   const officeId = idParam.parse(req.params.id);
   const body = officeSchema.parse(req.body);
@@ -130,7 +130,7 @@ adminOfficesRouter.put("/:id", async (req, res) => {
   res.json(await loadOffice(officeId));
 });
 
-// activate or deactivate an office; nothing assigned to it is changed
+// activate or deactivate an office without changing anything assigned to it
 adminOfficesRouter.patch("/:id/status", async (req, res) => {
   const officeId = idParam.parse(req.params.id);
   const { isActive } = statusSchema.parse(req.body);

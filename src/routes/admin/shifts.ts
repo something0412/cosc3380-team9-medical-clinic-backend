@@ -32,7 +32,7 @@ async function countUpcomingAppointments(client: PoolClient, where: "t.time_slot
     SELECT COUNT(*)::int AS count
     FROM appointment a
     JOIN time_slot t ON t.time_slot_id = a.time_slot_id
-    WHERE ${where} = $1 AND a.appointment_date >= CURRENT_DATE AND a.status = 'Scheduled'
+    WHERE ${where} = $1 AND a.appointment_date >= (now() AT TIME ZONE 'America/Chicago')::date AND a.status = 'Scheduled'
     `,
     [id]
   );
@@ -90,7 +90,7 @@ adminShiftsRouter.post("/", async (req, res) => {
   res.status(201).json(created);
 });
 
-// rename or change hours; active time slots must still fit inside the new hours
+// rename or change hours. Active time slots must still fit inside the new hours
 adminShiftsRouter.put("/:id", async (req, res) => {
   const shiftTypeId = idParam.parse(req.params.id);
   const body = shiftSchema.parse(req.body);
@@ -198,7 +198,7 @@ adminShiftsRouter.post("/:id/time-slots", async (req, res) => {
   res.status(201).json(created);
 });
 
-// change a slot's hours; blocked while upcoming appointments are booked in it
+// change a slot's hours, which is blocked while upcoming appointments are booked in it
 adminTimeSlotsRouter.put("/:id", async (req, res) => {
   const timeSlotId = idParam.parse(req.params.id);
   const body = hoursSchema.parse(req.body);

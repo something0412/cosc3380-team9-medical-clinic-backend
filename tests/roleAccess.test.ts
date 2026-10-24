@@ -5,7 +5,7 @@ import { startTestApp } from "./helpers/testApp.js";
 import type { TestClient, TestResponse } from "./helpers/testApp.js";
 import { TEST_PASSWORD, ids, resetDatabase } from "./helpers/testDb.js";
 
-// what each role got back is written here (git-ignored) so it can be looked at after a run
+// what each role got back is written here (ignored by Git) so it can be looked at after a run
 const outputDir = new URL("./output/role-access/", import.meta.url);
 
 type RoleName = "anonymous" | "patient" | "doctor" | "nurse" | "receptionist" | "admin";
@@ -23,7 +23,7 @@ interface Endpoint {
   expect: Record<RoleName, number>;
 }
 
-// patient 2 is created by the test so cross-patient access can be checked
+// patient 2 is created by the test so access to another patient's data can be checked
 const OTHER_PATIENT = 2;
 
 // extra rows so the patient and staff endpoints return something to look at
@@ -52,6 +52,9 @@ const OTHER_PATIENT_DATA = { anonymous: 401, patient: 403, doctor: 401, nurse: 4
 const OWN_STAFF = { anonymous: 401, patient: 401, doctor: 200, nurse: 200, receptionist: 200, admin: 200 };
 const OTHER_STAFF = { anonymous: 401, patient: 401, doctor: 403, nurse: 403, receptionist: 403, admin: 403 };
 const ADMIN_ONLY = { anonymous: 401, patient: 403, doctor: 403, nurse: 403, receptionist: 403, admin: 200 };
+const BOOKING = { anonymous: 401, patient: 200, doctor: 403, nurse: 403, receptionist: 200, admin: 403 };
+// appointment 1 is the patient's, at an office other than the receptionist's
+const OWN_APPOINTMENT = { anonymous: 401, patient: 200, doctor: 403, nurse: 403, receptionist: 403, admin: 403 };
 
 const fixed = (path: string) => () => path;
 const PATIENT_SECTIONS = ["profile", "appointments", "forms", "billing", "records", "dashboard"];
@@ -67,8 +70,15 @@ const ENDPOINTS: Endpoint[] = [
     `/api/public/offices/${ids.mainOffice}`,
     "/api/public/specialties",
   ].map((path) => ({ label: `GET ${path}`, path: fixed(path), expect: PUBLIC })),
+  {
+    label: "GET /api/public/availability",
+    path: fixed(`/api/public/availability?specialtyId=${ids.cardiology}&date=2030-01-07`),
+    expect: PUBLIC,
+  },
   { label: "GET /api/auth/me", path: fixed("/api/auth/me"), expect: LOGGED_IN },
   { label: "GET /api/patients", path: fixed("/api/patients"), expect: STAFF_ONLY },
+  { label: "GET /api/availability", path: fixed("/api/availability?date=2030-01-07"), expect: BOOKING },
+  { label: "GET /api/appointments/1", path: fixed("/api/appointments/1"), expect: OWN_APPOINTMENT },
   ...PATIENT_SECTIONS.map((section) => ({
     label: `GET /api/patient/<own>/${section}`,
     path: fixed(`/api/patient/${ids.patient}/${section}`),

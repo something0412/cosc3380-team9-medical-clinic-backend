@@ -149,7 +149,7 @@ function saveError(err: unknown) {
   return new HttpError(500, "Could not save the employee");
 }
 
-// run all steps on one client; roll back if any step fails
+// run all steps on one client and roll back if any step fails
 async function inTransaction<T>(work: (client: PoolClient) => Promise<T>) {
   const client = await pool.connect();
   try {
@@ -372,7 +372,7 @@ adminEmployeesRouter.post("/", async (req, res) => {
   res.status(201).json(await loadEmployee(employeeId));
 });
 
-// update employee info; login and active status are managed separately
+// update employee info. Login and active status are managed separately
 adminEmployeesRouter.put("/:id", async (req, res) => {
   const employeeId = idParam.parse(req.params.id);
   const body = updateSchema.parse(req.body);
@@ -438,7 +438,7 @@ adminEmployeesRouter.put("/:id", async (req, res) => {
   res.json(await loadEmployee(employeeId));
 });
 
-// activate or deactivate an employee; their login record is left as is
+// activate or deactivate an employee and leave their login record as is
 adminEmployeesRouter.patch("/:id/status", async (req, res) => {
   const employeeId = idParam.parse(req.params.id);
   const { isActive } = z.object({ isActive: z.boolean("Status must be true or false") }).parse(req.body);
@@ -450,7 +450,7 @@ adminEmployeesRouter.patch("/:id/status", async (req, res) => {
   res.json(await loadEmployee(employeeId));
 });
 
-// enable or disable an existing login; the password is not changed
+// enable or disable an existing login without changing the password
 adminEmployeesRouter.patch("/:id/login-status", async (req, res) => {
   const employeeId = idParam.parse(req.params.id);
   const { loginActive } = z.object({ loginActive: z.boolean("Login status must be true or false") }).parse(req.body);
@@ -464,7 +464,7 @@ adminEmployeesRouter.patch("/:id/login-status", async (req, res) => {
   res.json(await loadEmployee(employeeId));
 });
 
-// set a new password for an existing login; login status is not changed
+// set a new password for an existing login without changing its status
 adminEmployeesRouter.put("/:id/password", async (req, res) => {
   const employeeId = idParam.parse(req.params.id);
   const { password } = z.object({ password: passwordSchema }).parse(req.body);

@@ -58,19 +58,22 @@ process.env.NODE_ENV = "test";
 const schemaPath = new URL("../../database/schema.sql", import.meta.url);
 const fixturesPath = new URL("./fixtures.sql", import.meta.url);
 
+// migrations not applied to Supabase yet, so schema.sql doesn't include them
+const pendingMigrations: string[] = [];
+
 // rebuild the schema from database/schema.sql and load the fixtures
 export async function resetDatabase() {
   const client = new pg.Client({ connectionString: target.value });
   await client.connect();
   try {
-    // double-check the server before dropping anything
+    // check the server again before dropping anything
     const check = await client.query(`SELECT current_database() AS name, host(inet_server_addr()) AS address`);
     const { name, address } = check.rows[0];
     if (name !== target.database || (address !== null && !["127.0.0.1", "::1"].includes(address))) {
       throw new Error(`Refusing to reset "${name}": it is not the local test database.`);
     }
 
-    // psql meta-commands like \restrict aren't SQL
+    // psql commands like \restrict aren't SQL
     const schema = (await readFile(schemaPath, "utf8"))
       .split("\n")
       .filter((line) => !line.startsWith("\\"))
@@ -80,6 +83,9 @@ export async function resetDatabase() {
     await client.query(schema);
     // the schema dump clears search_path for its session
     await client.query("SET search_path TO public");
+    for (const file of pendingMigrations) {
+      await client.query(await readFile(new URL(`../../database/migrations/${file}`, import.meta.url), "utf8"));
+    }
     await client.query(await readFile(fixturesPath, "utf8"));
 
     const hash = await hashPassword(TEST_PASSWORD);

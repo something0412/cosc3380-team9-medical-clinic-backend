@@ -9,6 +9,7 @@ import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { requireRole } from "./middleware/requireRole.js";
 import { adminRouter } from "./routes/admin/index.js";
 import { authRouter } from "./routes/auth.js";
+import { bookingRouter } from "./routes/booking.js";
 import { doctorAppointmentsRouter } from "./routes/doctor/doctorAppointments.js";
 import { doctorDashboardRouter } from "./routes/doctor/doctorDashboard.js";
 import { doctorLabOrdersRouter } from "./routes/doctor/doctorLabOrders.js";
@@ -18,10 +19,11 @@ import { doctorScheduleRouter } from "./routes/doctor/doctorSchedule.js";
 import { healthRouter } from "./routes/health.js";
 import { labDashboardRouter } from "./routes/lab/labDashboard.js";
 import { labOrdersRouter } from "./routes/lab/labOrders.js";
-import { patientProfileRouter } from "./routes/patient/patientProfile.js";
-import { patientsRouter } from "./routes/patient/patients.js";
+import { patientPortalRouter } from "./routes/patient/portal.js";
+import { patientProfileRouter } from "./routes/patient/profile.js";
 import { publicRouter } from "./routes/public.js";
-import { staffProfileRouter } from "./routes/staff/staffProfile.js";
+import { staffPatientsRouter } from "./routes/staff/patients.js";
+import { staffProfileRouter } from "./routes/staff/profile.js";
 import { templateRouter } from "./routes/template.js";
 
 export const app = express();
@@ -57,7 +59,7 @@ app.use(session({
   },
 }));
 
-// patient portal: only the logged-in patient
+// only the logged in patient can use their patient portal
 app.use("/api/patient/:id", (req, res, next) => {
   if (req.session.role !== "patient") {
     res.status(401).json({ error: "Patient login required" });
@@ -70,7 +72,7 @@ app.use("/api/patient/:id", (req, res, next) => {
   next();
 });
 
-// staff profile: only the logged-in staff member
+// only the logged in employee can use their staff profile
 app.use("/api/staff/:id", (req, res, next) => {
   if (!req.session.role || req.session.role === "patient") {
     res.status(401).json({ error: "Staff login required" });
@@ -83,7 +85,7 @@ app.use("/api/staff/:id", (req, res, next) => {
   next();
 });
 
-// patient list and registration: staff only
+// the patient list and registration are for staff only
 app.use("/api/patients", (req, res, next) => {
   if (!req.session.role || req.session.role === "patient") {
     res.status(401).json({ error: "Staff login required" });
@@ -128,7 +130,8 @@ app.use(doctorAppointmentsRouter);
 app.use(doctorScheduleRouter);
 app.use(labDashboardRouter);
 app.use(labOrdersRouter);
-app.use(patientsRouter);
+app.use(staffPatientsRouter);
+app.use(patientPortalRouter);
 app.use(patientProfileRouter);
 app.use(staffProfileRouter);
 app.use(templateRouter);
@@ -136,7 +139,10 @@ app.use(templateRouter);
 // public website information, anyone can read it
 app.use("/api/public", publicRouter);
 
-// admin portal: admins only
+// appointment booking for patients and receptionists, checked in each route
+app.use(bookingRouter);
+
+// the admin portal is for admins only
 app.use("/api/admin", requireRole("admin"), adminRouter);
 
 app.use(notFoundHandler);

@@ -33,6 +33,149 @@ CREATE SCHEMA public;
 COMMENT ON SCHEMA public IS 'standard public schema';
 
 
+--
+-- Name: check_appointment_conflict(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.check_appointment_conflict() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+DECLARE
+    slot_start time;
+    slot_end time;
+BEGIN
+    IF NEW.status = 'Cancelled' THEN
+        RETURN NEW;
+    END IF;
+
+    -- status changes like check out don't move the appointment, so they skip the check
+    IF TG_OP = 'UPDATE'
+       AND OLD.status <> 'Cancelled'
+       AND OLD.doctor_id = NEW.doctor_id
+       AND OLD.patient_id = NEW.patient_id
+       AND OLD.appointment_date = NEW.appointment_date
+       AND OLD.time_slot_id = NEW.time_slot_id THEN
+        RETURN NEW;
+    END IF;
+
+    -- each query below needs a fresh snapshot to see appointments committed while it waited
+    IF current_setting('transaction_isolation') <> 'read committed' THEN
+        RAISE EXCEPTION 'Appointments must be written in a read committed transaction';
+    END IF;
+
+    -- one writer at a time per doctor, then per patient, until the transaction ends
+    PERFORM pg_advisory_xact_lock(33801, NEW.doctor_id);
+    PERFORM pg_advisory_xact_lock(33802, NEW.patient_id);
+
+    SELECT start_time, end_time INTO slot_start, slot_end
+    FROM public.time_slot
+    WHERE time_slot_id = NEW.time_slot_id;
+
+    IF EXISTS (
+        SELECT 1
+        FROM public.appointment a
+        JOIN public.time_slot t ON t.time_slot_id = a.time_slot_id
+        WHERE a.appointment_id <> NEW.appointment_id
+          AND a.doctor_id = NEW.doctor_id
+          AND a.appointment_date = NEW.appointment_date
+          AND a.status <> 'Cancelled'
+          AND t.start_time < slot_end
+          AND t.end_time > slot_start
+    ) THEN
+        RAISE EXCEPTION 'The doctor already has an appointment at that time'
+            USING ERRCODE = 'exclusion_violation';
+    END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM public.appointment a
+        JOIN public.time_slot t ON t.time_slot_id = a.time_slot_id
+        WHERE a.appointment_id <> NEW.appointment_id
+          AND a.patient_id = NEW.patient_id
+          AND a.appointment_date = NEW.appointment_date
+          AND a.status <> 'Cancelled'
+          AND t.start_time < slot_end
+          AND t.end_time > slot_start
+    ) THEN
+        RAISE EXCEPTION 'The patient already has an appointment at that time'
+            USING ERRCODE = 'exclusion_violation';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: record_appointment_history(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.record_appointment_history() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+BEGIN
+    -- updates that leave every tracked column alone aren't recorded
+    IF TG_OP = 'UPDATE'
+       AND OLD.status IS NOT DISTINCT FROM NEW.status
+       AND OLD.appointment_date IS NOT DISTINCT FROM NEW.appointment_date
+       AND OLD.time_slot_id IS NOT DISTINCT FROM NEW.time_slot_id
+       AND OLD.doctor_id IS NOT DISTINCT FROM NEW.doctor_id THEN
+        RETURN NULL;
+    END IF;
+
+    INSERT INTO public.appointment_history (
+        appointment_id, operation,
+        old_status, new_status,
+        old_appointment_date, new_appointment_date,
+        old_time_slot_id, new_time_slot_id,
+        old_doctor_id, new_doctor_id
+    )
+    VALUES (
+        NEW.appointment_id, TG_OP,
+        OLD.status, NEW.status,
+        OLD.appointment_date, NEW.appointment_date,
+        OLD.time_slot_id, NEW.time_slot_id,
+        OLD.doctor_id, NEW.doctor_id
+    );
+
+    RETURN NULL;
+END;
+$$;
+
+
+--
+-- Name: record_employee_changes(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.record_employee_changes() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+BEGIN
+    IF OLD.is_active IS DISTINCT FROM NEW.is_active THEN
+        INSERT INTO public.employee_audit (employee_id, field_name, old_value, new_value)
+        VALUES (NEW.employee_id, 'is_active', OLD.is_active::text, NEW.is_active::text);
+    END IF;
+
+    IF OLD.employee_type_id IS DISTINCT FROM NEW.employee_type_id THEN
+        INSERT INTO public.employee_audit (employee_id, field_name, old_value, new_value)
+        VALUES (NEW.employee_id, 'employee_type_id', OLD.employee_type_id::text, NEW.employee_type_id::text);
+    END IF;
+
+    IF OLD.office_id IS DISTINCT FROM NEW.office_id THEN
+        INSERT INTO public.employee_audit (employee_id, field_name, old_value, new_value)
+        VALUES (NEW.employee_id, 'office_id', OLD.office_id::text, NEW.office_id::text);
+    END IF;
+
+    RETURN NULL;
+END;
+$$;
+
+
+SET default_tablespace = '';
+
 SET default_table_access_method = heap;
 
 --
@@ -107,7 +250,10 @@ CREATE TABLE public.appointment (
     status character varying(20) DEFAULT 'Scheduled'::character varying NOT NULL,
     booking_channel character varying(10) NOT NULL,
     booked_by_employee_id integer,
+    checked_in_at timestamp with time zone,
+    checked_out_at timestamp with time zone,
     CONSTRAINT chk_appointment_channel CHECK (((booking_channel)::text = ANY ((ARRAY['Phone'::character varying, 'Web'::character varying])::text[]))),
+    CONSTRAINT chk_appointment_check_out CHECK (((checked_out_at IS NULL) OR ((checked_in_at IS NOT NULL) AND (checked_out_at >= checked_in_at)))),
     CONSTRAINT chk_appointment_phone_staff CHECK (((((booking_channel)::text = 'Phone'::text) AND (booked_by_employee_id IS NOT NULL)) OR ((booking_channel)::text = 'Web'::text))),
     CONSTRAINT chk_appointment_status CHECK (((status)::text = ANY ((ARRAY['Scheduled'::character varying, 'Cancelled'::character varying, 'Completed'::character varying, 'No Show'::character varying])::text[])))
 );
@@ -119,6 +265,41 @@ CREATE TABLE public.appointment (
 
 ALTER TABLE public.appointment ALTER COLUMN appointment_id ADD GENERATED ALWAYS AS IDENTITY (
     SEQUENCE NAME public.appointment_appointment_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: appointment_history; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.appointment_history (
+    history_id integer NOT NULL,
+    appointment_id integer NOT NULL,
+    operation character varying(6) NOT NULL,
+    old_status character varying(20),
+    new_status character varying(20) NOT NULL,
+    old_appointment_date date,
+    new_appointment_date date NOT NULL,
+    old_time_slot_id integer,
+    new_time_slot_id integer NOT NULL,
+    old_doctor_id integer,
+    new_doctor_id integer NOT NULL,
+    changed_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_appointment_history_operation CHECK (((operation)::text = ANY (ARRAY[('INSERT'::character varying)::text, ('UPDATE'::character varying)::text])))
+);
+
+
+--
+-- Name: appointment_history_history_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.appointment_history ALTER COLUMN history_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.appointment_history_history_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -270,6 +451,35 @@ CREATE TABLE public.employee (
     email character varying(100) NOT NULL,
     office_id integer NOT NULL,
     is_active boolean DEFAULT true NOT NULL
+);
+
+
+--
+-- Name: employee_audit; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.employee_audit (
+    audit_id integer NOT NULL,
+    employee_id integer NOT NULL,
+    field_name character varying(20) NOT NULL,
+    old_value character varying(20),
+    new_value character varying(20),
+    changed_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_employee_audit_field CHECK (((field_name)::text = ANY (ARRAY[('is_active'::character varying)::text, ('employee_type_id'::character varying)::text, ('office_id'::character varying)::text])))
+);
+
+
+--
+-- Name: employee_audit_audit_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.employee_audit ALTER COLUMN audit_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.employee_audit_audit_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
 );
 
 
@@ -498,6 +708,8 @@ CREATE TABLE public.lab_order (
     status character varying(20) DEFAULT 'Ordered'::character varying NOT NULL,
     order_date date DEFAULT CURRENT_DATE NOT NULL,
     result_notes text,
+    performed_by_employee_id integer,
+    result_date timestamp without time zone,
     CONSTRAINT chk_lab_order_status CHECK (((status)::text = ANY ((ARRAY['Ordered'::character varying, 'InProgress'::character varying, 'Completed'::character varying, 'Cancelled'::character varying])::text[])))
 );
 
@@ -726,18 +938,16 @@ CREATE TABLE public.patient_vitals (
     patient_id integer NOT NULL,
     appointment_id integer,
     recorded_by_employee_id integer NOT NULL,
-    temperature numeric(5,2),
+    temperature numeric(10,2),
     heartrate_bpm integer,
     systolic_bp integer,
     diastolic_bp integer,
-    weight_lbs numeric(5,2),
-    height_inches numeric(5,2),
-    CONSTRAINT patient_vitals_diastolic_bp_check CHECK ((diastolic_bp > 0)),
-    CONSTRAINT patient_vitals_heartrate_bpm_check CHECK ((heartrate_bpm > 0)),
-    CONSTRAINT patient_vitals_height_inches_check CHECK ((height_inches > (0)::numeric)),
-    CONSTRAINT patient_vitals_systolic_bp_check CHECK ((systolic_bp > 0)),
-    CONSTRAINT patient_vitals_temperature_check CHECK ((temperature > (0)::numeric)),
-    CONSTRAINT patient_vitals_weight_lbs_check CHECK ((weight_lbs > (0)::numeric))
+    weight_lbs numeric(10,2),
+    height_inches numeric(10,2),
+    recorded_at timestamp without time zone DEFAULT now() NOT NULL,
+    respiratory_rate integer,
+    oxygen_saturation integer,
+    CONSTRAINT patient_vitals_has_reading_check CHECK ((num_nonnulls(temperature, heartrate_bpm, systolic_bp, diastolic_bp, respiratory_rate, oxygen_saturation, weight_lbs, height_inches) > 0))
 );
 
 
@@ -1064,6 +1274,35 @@ ALTER TABLE public.time_slot ALTER COLUMN time_slot_id ADD GENERATED ALWAYS AS I
 
 
 --
+-- Name: visit_diagnosis; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.visit_diagnosis (
+    visit_diagnosis_id integer NOT NULL,
+    appointment_id integer NOT NULL,
+    name character varying(200) NOT NULL,
+    reasoning text,
+    recorded_by_employee_id integer NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_visit_diagnosis_name CHECK ((length(TRIM(BOTH FROM name)) > 0))
+);
+
+
+--
+-- Name: visit_diagnosis_visit_diagnosis_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.visit_diagnosis ALTER COLUMN visit_diagnosis_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.visit_diagnosis_visit_diagnosis_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: allergy allergy_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1085,6 +1324,14 @@ ALTER TABLE ONLY public.allergy_type
 
 ALTER TABLE ONLY public.allergy_type
     ADD CONSTRAINT allergy_type_pkey PRIMARY KEY (allergy_type_id);
+
+
+--
+-- Name: appointment_history appointment_history_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.appointment_history
+    ADD CONSTRAINT appointment_history_pkey PRIMARY KEY (history_id);
 
 
 --
@@ -1173,6 +1420,14 @@ ALTER TABLE ONLY public.doctor_specialty
 
 ALTER TABLE ONLY public.emergency_contact
     ADD CONSTRAINT emergency_contact_pkey PRIMARY KEY (emergency_contact_id);
+
+
+--
+-- Name: employee_audit employee_audit_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.employee_audit
+    ADD CONSTRAINT employee_audit_pkey PRIMARY KEY (audit_id);
 
 
 --
@@ -1544,6 +1799,63 @@ ALTER TABLE ONLY public.office_supply
 
 
 --
+-- Name: visit_diagnosis visit_diagnosis_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.visit_diagnosis
+    ADD CONSTRAINT visit_diagnosis_pkey PRIMARY KEY (visit_diagnosis_id);
+
+
+--
+-- Name: idx_appointment_history_appointment; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_appointment_history_appointment ON public.appointment_history USING btree (appointment_id, changed_at);
+
+
+--
+-- Name: idx_employee_audit_employee; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_employee_audit_employee ON public.employee_audit USING btree (employee_id, changed_at);
+
+
+--
+-- Name: idx_patient_vitals_patient_recorded; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_patient_vitals_patient_recorded ON public.patient_vitals USING btree (patient_id, recorded_at DESC);
+
+
+--
+-- Name: idx_visit_diagnosis_appointment; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_visit_diagnosis_appointment ON public.visit_diagnosis USING btree (appointment_id);
+
+
+--
+-- Name: appointment appointment_conflict_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER appointment_conflict_trigger BEFORE INSERT OR UPDATE ON public.appointment FOR EACH ROW EXECUTE FUNCTION public.check_appointment_conflict();
+
+
+--
+-- Name: appointment appointment_history_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER appointment_history_trigger AFTER INSERT OR UPDATE ON public.appointment FOR EACH ROW EXECUTE FUNCTION public.record_appointment_history();
+
+
+--
+-- Name: employee employee_audit_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER employee_audit_trigger AFTER UPDATE OF is_active, employee_type_id, office_id ON public.employee FOR EACH ROW EXECUTE FUNCTION public.record_employee_changes();
+
+
+--
 -- Name: allergy allergy_allergy_type_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1824,6 +2136,14 @@ ALTER TABLE ONLY public.lab_order
 
 
 --
+-- Name: lab_order lab_order_performed_by_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.lab_order
+    ADD CONSTRAINT lab_order_performed_by_employee_id_fkey FOREIGN KEY (performed_by_employee_id) REFERENCES public.employee(employee_id) ON DELETE RESTRICT;
+
+
+--
 -- Name: nurse nurse_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2024,6 +2344,22 @@ ALTER TABLE ONLY public.time_slot
 
 
 --
+-- Name: visit_diagnosis visit_diagnosis_appointment_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.visit_diagnosis
+    ADD CONSTRAINT visit_diagnosis_appointment_id_fkey FOREIGN KEY (appointment_id) REFERENCES public.appointment(appointment_id) ON DELETE CASCADE;
+
+
+--
+-- Name: visit_diagnosis visit_diagnosis_recorded_by_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.visit_diagnosis
+    ADD CONSTRAINT visit_diagnosis_recorded_by_employee_id_fkey FOREIGN KEY (recorded_by_employee_id) REFERENCES public.employee(employee_id) ON DELETE RESTRICT;
+
+
+--
 -- Name: allergy; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -2040,6 +2376,12 @@ ALTER TABLE public.allergy_type ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.appointment ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: appointment_history; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.appointment_history ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: appointment_summary; Type: ROW SECURITY; Schema: public; Owner: -
@@ -2082,6 +2424,12 @@ ALTER TABLE public.emergency_contact ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.employee ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: employee_audit; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.employee_audit ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: employee_creds; Type: ROW SECURITY; Schema: public; Owner: -
@@ -2180,6 +2528,12 @@ ALTER TABLE public.patient_creds ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.patient_doctor ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: patient_vitals; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.patient_vitals ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: payment; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -2244,6 +2598,12 @@ ALTER TABLE public.supply_type ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.time_slot ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: visit_diagnosis; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.visit_diagnosis ENABLE ROW LEVEL SECURITY;
 
 --
 -- PostgreSQL database dump complete
