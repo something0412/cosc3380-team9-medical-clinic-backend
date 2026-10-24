@@ -1,11 +1,14 @@
 import { Router } from "express";
+import { CLINIC_TODAY } from "../../lib/clinicTime.js";
 import { pool } from "../../lib/db.js";
+import { HttpError } from "../../middleware/errorHandler.js";
 
 export const labDashboardRouter = Router();
 
 // get dashboard numbers and the oldest waiting orders
 labDashboardRouter.get("/api/lab/dashboard", async (req, res) => {
-  const labTechId = req.session.employeeId;
+  if (req.user?.role !== "lab") throw new HttpError(401, "Login required");
+  const labTechId = req.user.employeeId;
 
   // get how many orders are waiting, in progress, done today, and done by me this week (Houston dates)
   const counts = await pool.query(
@@ -14,11 +17,11 @@ labDashboardRouter.get("/api/lab/dashboard", async (req, res) => {
       count(*) FILTER (WHERE status = 'Ordered')::int AS waiting,
       count(*) FILTER (WHERE status = 'InProgress')::int AS "inProgress",
       count(*) FILTER (
-        WHERE status = 'Completed' AND result_date::date = (now() AT TIME ZONE 'America/Chicago')::date
+        WHERE status = 'Completed' AND result_date::date = ${CLINIC_TODAY}
       )::int AS "completedToday",
       count(*) FILTER (
         WHERE status = 'Completed' AND performed_by_employee_id = $1
-          AND result_date::date > (now() AT TIME ZONE 'America/Chicago')::date - 7
+          AND result_date::date > ${CLINIC_TODAY} - 7
       )::int AS "myWeek"
     FROM lab_order
     `,
@@ -34,7 +37,7 @@ labDashboardRouter.get("/api/lab/dashboard", async (req, res) => {
       t.name AS "testName",
       d.first_name || ' ' || d.last_name AS "orderedBy",
       to_char(l.order_date, 'YYYY-MM-DD') AS "orderDate",
-      ((now() AT TIME ZONE 'America/Chicago')::date - l.order_date)::int AS "daysWaiting",
+      (${CLINIC_TODAY} - l.order_date)::int AS "daysWaiting",
       l.status
     FROM lab_order l
     JOIN patient p ON p.patient_id = l.patient_id
