@@ -6,7 +6,7 @@ import { CLINIC_TODAY } from "../../lib/clinicTime.js";
 import { pool } from "../../lib/db.js";
 import { withTransaction } from "../../lib/transaction.js";
 import { HttpError } from "../../middleware/errorHandler.js";
-import { LAB_ORDER_COLUMNS, LAB_ORDER_JOINS, doctorCaresFor, lockActiveDoctor } from "../../services/clinical.js";
+import { LAB_ORDER_COLUMNS, LAB_ORDER_JOINS, asClinician, doctorCaresFor, lockPatientInCare } from "../../services/clinical.js";
 
 export const doctorLabOrdersRouter = Router();
 
@@ -71,14 +71,7 @@ doctorLabOrdersRouter.post("/api/doctor/lab-orders", async (req, res) => {
 
   const order = await withTransaction(async (client) => {
     // orders for one patient go one at a time, so the same test can't be ordered twice by accident
-    const patient = await client.query(
-      `SELECT p.is_active AS "isActive", ${doctorCaresFor("$2", "p.patient_id")} AS cares FROM patient p WHERE p.patient_id = $1 FOR NO KEY UPDATE`,
-      [patientId, doctorId]
-    );
-    if (!patient.rowCount) throw new HttpError(404, "Patient not found");
-    await lockActiveDoctor(client, doctorId);
-    if (!patient.rows[0].cares) throw new HttpError(403, "This patient isn't under your care");
-    if (!patient.rows[0].isActive) throw new HttpError(409, "This patient account is inactive");
+    await lockPatientInCare(client, asClinician(req.user, "doctor"), patientId);
 
     if (appointmentId) {
       const visit = await client.query(`SELECT patient_id AS "patientId", doctor_id AS "doctorId", status FROM appointment WHERE appointment_id = $1 FOR SHARE`, [

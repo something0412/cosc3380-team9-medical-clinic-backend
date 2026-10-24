@@ -6,15 +6,7 @@ import { pool } from "../../lib/db.js";
 import { withTransaction } from "../../lib/transaction.js";
 import { HttpError } from "../../middleware/errorHandler.js";
 import { getAppointment, listAppointments } from "../../services/booking.js";
-import {
-  addVisitDiagnoses,
-  assertDoctorCanSeePatient,
-  getPatientAlerts,
-  getPrescription,
-  getVisitRecord,
-  lockDoctorVisit,
-  saveVisitSummary,
-} from "../../services/clinical.js";
+import { addVisitDiagnoses, asClinician, assertCanSeePatient, getPatientAlerts, getPrescription, getVisitRecord, lockVisit, saveVisitSummary } from "../../services/clinical.js";
 import { bookingDate } from "../booking.js";
 
 export const doctorAppointmentsRouter = Router();
@@ -69,10 +61,7 @@ const prescriptionBody = z.object({
 });
 
 // the doctor is whoever is signed in, never an ID from the request
-function me(req: Request) {
-  if (req.user?.role !== "doctor") throw new HttpError(401, "Login required");
-  return req.user.employeeId;
-}
+const me = (req: Request) => asClinician(req.user, "doctor");
 
 // get my appointments for today, upcoming, past or all, or for one date
 doctorAppointmentsRouter.get("/api/doctor/appointments", async (req, res) => {
@@ -85,57 +74,52 @@ doctorAppointmentsRouter.get("/api/doctor/appointments", async (req, res) => {
 
 // get one visit with everything needed to see the patient
 doctorAppointmentsRouter.get("/api/doctor/appointments/:id", async (req, res) => {
-  const doctorId = me(req);
+  const doctor = me(req);
   const appointment = await getAppointment(pool, id("an appointment").parse(req.params.id));
-  if (!appointment || appointment.doctorId !== doctorId) throw new HttpError(404, "Appointment not found");
+  if (!appointment || appointment.doctorId !== doctor.employeeId) throw new HttpError(404, "Appointment not found");
 
   res.json({
     ...appointment,
     ...(await getVisitRecord(appointment.appointmentId)),
-    ...(await getPatientAlerts(appointment.patientId)),
+    ...(await getPatientAlerts(appointment.patientId, doctor)),
   });
 });
 
 // save the visit summary (creates it or updates the fields that were sent)
 doctorAppointmentsRouter.put("/api/doctor/appointments/:id/summary", async (req, res) => {
-  const doctorId = me(req);
+  const doctor = me(req);
   const appointmentId = id("an appointment").parse(req.params.id);
   const fields = summaryBody.parse(req.body);
 
   const summary = await withTransaction(async (client) => {
-    await lockDoctorVisit(client, appointmentId, doctorId);
-    return saveVisitSummary(client, appointmentId, doctorId, fields);
+    await lockVisit(client, appointmentId, doctor);
+    return saveVisitSummary(client, appointmentId, doctor.employeeId, fields);
   });
   res.json(summary);
 });
 
 // add diagnoses to a visit, and get back every diagnosis on it
 doctorAppointmentsRouter.post("/api/doctor/appointments/:id/diagnoses", async (req, res) => {
-  const doctorId = me(req);
+  const doctor = me(req);
   const appointmentId = id("an appointment").parse(req.params.id);
   const { diagnoses } = diagnosesBody.parse(req.body);
 
   const all = await withTransaction(async (client) => {
-    await lockDoctorVisit(client, appointmentId, doctorId);
-    return addVisitDiagnoses(client, appointmentId, doctorId, diagnoses);
+    await lockVisit(client, appointmentId, doctor);
+    return addVisitDiagnoses(client, appointmentId, doctor.employeeId, diagnoses);
   });
   res.status(201).json(all);
 });
 
-// get medications for the prescription form
-doctorAppointmentsRouter.get("/api/doctor/medications", async (_req, res) => {
-  const result = await pool.query(`SELECT medication_id AS "medicationId", name, manufacturer FROM medication WHERE is_active ORDER BY name`);
-  res.json(result.rows);
-});
-
 // write a prescription at this visit, with all of its medications or none of them
 doctorAppointmentsRouter.post("/api/doctor/appointments/:id/prescriptions", async (req, res) => {
-  const doctorId = me(req);
+  const doctor = me(req);
+  const doctorId = doctor.employeeId;
   const appointmentId = id("an appointment").parse(req.params.id);
   const { items } = prescriptionBody.parse(req.body);
 
   const prescription = await withTransaction(async (client) => {
-    const { patientId } = await lockDoctorVisit(client, appointmentId, doctorId);
+    const { patientId } = await lockVisit(client, appointmentId, doctor);
     const patient = await client.query(`SELECT is_active AS "isActive" FROM patient WHERE patient_id = $1 FOR SHARE`, [patientId]);
     if (!patient.rows[0].isActive) throw new HttpError(409, "This patient account is inactive");
 
@@ -161,11 +145,10 @@ doctorAppointmentsRouter.post("/api/doctor/appointments/:id/prescriptions", asyn
 
 // get one prescription for a patient I care for
 doctorAppointmentsRouter.get("/api/doctor/prescriptions/:id", async (req, res) => {
-  const doctorId = me(req);
   const prescription = await getPrescription(pool, id("a prescription").parse(req.params.id));
   if (!prescription) throw new HttpError(404, "Prescription not found");
   // a doctor who isn't caring for the patient doesn't learn it exists
-  await assertDoctorCanSeePatient(doctorId, prescription.patientId).catch(() => {
+  await assertCanSeePatient(me(req), prescription.patientId).catch(() => {
     throw new HttpError(404, "Prescription not found");
   });
   res.json(prescription);
@@ -173,7 +156,7 @@ doctorAppointmentsRouter.get("/api/doctor/prescriptions/:id", async (req, res) =
 
 // stop a prescription I wrote
 doctorAppointmentsRouter.patch("/api/doctor/prescription-items/:id/stop", async (req, res) => {
-  const doctorId = me(req);
+  const doctorId = me(req).employeeId;
   const itemId = id("a prescription").parse(req.params.id);
 
   const prescription = await withTransaction(async (client) => {

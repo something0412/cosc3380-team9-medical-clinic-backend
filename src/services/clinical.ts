@@ -1,7 +1,22 @@
 import type { Pool, PoolClient } from "pg";
 import { CLINIC_NOW, CLINIC_TODAY } from "../lib/clinicTime.js";
 import { pool } from "../lib/db.js";
+import { withTransaction } from "../lib/transaction.js";
 import { HttpError } from "../middleware/errorHandler.js";
+import type { SessionUser } from "../middleware/sessionUser.js";
+
+// doctors and nurses share the chart and patient record code, and each role has its own access rule
+export interface Clinician {
+  role: "doctor" | "nurse";
+  employeeId: number;
+  officeId: number;
+}
+
+// the signed in doctor or nurse, never an ID from the request
+export function asClinician(user: SessionUser | undefined, role: Clinician["role"]): Clinician {
+  if (!user || user.role === "patient" || user.staffType !== role) throw new HttpError(401, "Login required");
+  return { role, employeeId: user.employeeId, officeId: user.officeId };
+}
 
 // a doctor cares for a patient they're assigned to or have a booked or finished visit with
 // cancelled and No Show visits don't count, and a referral alone only shows the referral itself
@@ -10,27 +25,53 @@ export const doctorCaresFor = (doctor: string, patient: string) => `(
   OR EXISTS (SELECT 1 FROM appointment ca WHERE ca.patient_id = ${patient} AND ca.doctor_id = ${doctor} AND ca.status IN ('Scheduled', 'Completed'))
 )`;
 
+// nurses aren't assigned to single visits, so they care for patients with a visit at their office today
+// an older visit there doesn't keep the chart open
+const nurseCaresFor = (office: string, patient: string) => `EXISTS (
+  SELECT 1 FROM appointment na
+  WHERE na.patient_id = ${patient} AND na.office_id = ${office} AND na.appointment_date = ${CLINIC_TODAY} AND na.status IN ('Scheduled', 'Completed')
+)`;
+
+const caresFor = (c: Clinician, param: string, patient: string) => (c.role === "doctor" ? doctorCaresFor(param, patient) : nurseCaresFor(param, patient));
+const careKey = (c: Clinician) => (c.role === "doctor" ? c.employeeId : c.officeId);
+const NOT_IN_CARE = { doctor: "This patient isn't under your care", nurse: "This patient doesn't have a visit at your office today" };
+
 // care only happened once the patient checked in, so only those visits can be documented
 const DOCUMENTABLE = `(a.status = 'Completed' OR (a.status = 'Scheduled' AND a.checked_in_at IS NOT NULL))`;
 
-export async function assertDoctorCanSeePatient(doctorId: number, patientId: number, db: Pool | PoolClient = pool) {
-  const result = await db.query(`SELECT ${doctorCaresFor("$1", "p.patient_id")} AS cares FROM patient p WHERE p.patient_id = $2`, [doctorId, patientId]);
+export async function assertCanSeePatient(c: Clinician, patientId: number, db: Pool | PoolClient = pool) {
+  const result = await db.query(`SELECT ${caresFor(c, "$1", "p.patient_id")} AS cares FROM patient p WHERE p.patient_id = $2`, [careKey(c), patientId]);
   if (!result.rowCount) throw new HttpError(404, "Patient not found");
-  if (!result.rows[0].cares) throw new HttpError(403, "This patient isn't under your care");
+  if (!result.rows[0].cares) throw new HttpError(403, NOT_IN_CARE[c.role]);
 }
 
-// the doctor's row is locked so a deactivation in progress is waited for and then seen
-export async function lockActiveDoctor(client: PoolClient, doctorId: number) {
-  const me = await client.query(`SELECT is_active AS "isActive" FROM employee WHERE employee_id = $1 FOR SHARE`, [doctorId]);
+// the employee row is locked so a deactivation or office move in progress is waited for and then seen
+export async function lockActiveEmployee(client: PoolClient, employeeId: number) {
+  const me = await client.query(`SELECT is_active AS "isActive", office_id AS "officeId" FROM employee WHERE employee_id = $1 FOR SHARE`, [employeeId]);
   if (!me.rows[0]?.isActive) throw new HttpError(403, "Your account is no longer active");
+  return me.rows[0].officeId as number;
 }
 
-// locks one of the doctor's own visits for documenting, so its status can't change until the write commits
-export async function lockDoctorVisit(client: PoolClient, appointmentId: number, doctorId: number) {
-  await lockActiveDoctor(client, doctorId);
+// locks the patient and then the clinician before a patient record changes
+// writes for one patient go one at a time, so the same record can't be added twice
+// hideAs turns a patient outside your care into a not found error, so a record ID doesn't give anything away
+export async function lockPatientInCare(client: PoolClient, c: Clinician, patientId: number, hideAs?: string) {
+  const patient = await client.query(`SELECT is_active AS "isActive" FROM patient WHERE patient_id = $1 FOR NO KEY UPDATE`, [patientId]);
+  if (!patient.rowCount) throw new HttpError(404, hideAs ?? "Patient not found");
+  const me = { ...c, officeId: await lockActiveEmployee(client, c.employeeId) };
+  const care = await client.query(`SELECT ${caresFor(me, "$1", "$2::int")} AS cares`, [careKey(me), patientId]);
+  if (!care.rows[0].cares) throw hideAs ? new HttpError(404, hideAs) : new HttpError(403, NOT_IN_CARE[c.role]);
+  if (!patient.rows[0].isActive) throw new HttpError(409, "This patient account is inactive");
+}
+
+// locks a visit for documenting, so its status can't change until the write commits
+// doctors document their own visits, and nurses document visits at their office on the day they happen
+export async function lockVisit(client: PoolClient, appointmentId: number, c: Clinician) {
+  const officeId = await lockActiveEmployee(client, c.employeeId);
   const visit = await client.query(
     `
-    SELECT a.patient_id AS "patientId", a.doctor_id AS "doctorId", a.status, a.checked_in_at IS NOT NULL AS "checkedIn", ${DOCUMENTABLE} AS documentable
+    SELECT a.patient_id AS "patientId", a.doctor_id AS "doctorId", a.office_id AS "officeId", a.status,
+      a.appointment_date = ${CLINIC_TODAY} AS today, ${DOCUMENTABLE} AS documentable
     FROM appointment a
     WHERE a.appointment_id = $1
     FOR NO KEY UPDATE
@@ -38,15 +79,17 @@ export async function lockDoctorVisit(client: PoolClient, appointmentId: number,
     [appointmentId]
   );
   const row = visit.rows[0];
-  if (!row || row.doctorId !== doctorId) throw new HttpError(404, "Appointment not found");
+  const mine = c.role === "doctor" ? row?.doctorId === c.employeeId : row?.officeId === officeId;
+  if (!row || !mine) throw new HttpError(404, "Appointment not found");
   if (!row.documentable) {
     const detail = row.status === "Scheduled" ? "This patient hasn't checked in yet." : `This one is ${row.status}.`;
     throw new HttpError(409, `Only checked in or completed visits can be documented. ${detail}`);
   }
+  if (c.role === "nurse" && !row.today) throw new HttpError(409, "Nurses can only document a visit on the day it happens");
   return { patientId: row.patientId as number };
 }
 
-export async function listDoctorPatients(doctorId: number, search = "") {
+export async function listPatientsInCare(c: Clinician, search = "") {
   const result = await pool.query(
     `
     SELECT
@@ -54,18 +97,18 @@ export async function listDoctorPatients(doctorId: number, search = "") {
       p.first_name AS "firstName",
       p.last_name AS "lastName",
       to_char(p.dob, 'YYYY-MM-DD') AS dob,
-      EXISTS (SELECT 1 FROM patient_doctor pd WHERE pd.patient_id = p.patient_id AND pd.doctor_id = $1 AND pd.is_active) AS "assignedToMe",
+      ${c.role === "doctor" ? `EXISTS (SELECT 1 FROM patient_doctor pd WHERE pd.patient_id = p.patient_id AND pd.doctor_id = $1 AND pd.is_active) AS "assignedToMe",` : ""}
       (SELECT to_char(max(a.appointment_date), 'YYYY-MM-DD') FROM appointment a WHERE a.patient_id = p.patient_id AND a.status = 'Completed') AS "lastVisit",
       (
         SELECT to_char(min(a.appointment_date), 'YYYY-MM-DD') FROM appointment a
         WHERE a.patient_id = p.patient_id AND a.status = 'Scheduled' AND a.appointment_date >= ${CLINIC_TODAY}
       ) AS "nextVisit"
     FROM patient p
-    WHERE ${doctorCaresFor("$1", "p.patient_id")}
+    WHERE ${caresFor(c, "$1", "p.patient_id")}
       AND ($2 = '' OR p.first_name || ' ' || p.last_name ILIKE '%' || $2 || '%' ESCAPE '\\')
     ORDER BY p.last_name, p.first_name, p.patient_id
     `,
-    [doctorId, search.replace(/[\\%_]/g, (character) => `\\${character}`)]
+    [careKey(c), search.replace(/[\\%_]/g, (character) => `\\${character}`)]
   );
   return result.rows;
 }
@@ -129,11 +172,49 @@ export const LAB_ORDER_JOINS = `
   LEFT JOIN employee pb ON pb.employee_id = l.performed_by_employee_id
 `;
 
+const ALLERGY_COLUMNS = `
+  al.allergy_id AS "allergyId",
+  al.patient_id AS "patientId",
+  al.allergy_type_id AS "allergyTypeId",
+  t.name,
+  t.category,
+  al.reaction,
+  al.severity,
+  al.is_active AS "isActive"
+`;
+
+const HOME_MEDICATION_COLUMNS = `
+  hm.home_medication_id AS "homeMedicationId",
+  hm.patient_id AS "patientId",
+  hm.medication_id AS "medicationId",
+  hm.medication_name AS "medicationName",
+  hm.category,
+  hm.dosage,
+  hm.frequency,
+  to_char(hm.start_date, 'YYYY-MM-DD') AS "startDate",
+  hm.is_active AS "isActive"
+`;
+
+const NURSING_NOTE_COLUMNS = `
+  nn.nursing_note_id AS "nursingNoteId",
+  nn.appointment_id AS "appointmentId",
+  nn.note,
+  nn.recorded_by_employee_id AS "recordedById",
+  e.first_name || ' ' || e.last_name AS "recordedBy",
+  to_char(nn.recorded_at, 'YYYY-MM-DD HH24:MI') AS "recordedAt",
+  to_char(nn.updated_at, 'YYYY-MM-DD HH24:MI') AS "updatedAt"
+`;
+
+const NURSING_NOTE_JOINS = `
+  JOIN appointment a ON a.appointment_id = nn.appointment_id
+  JOIN employee e ON e.employee_id = nn.recorded_by_employee_id
+`;
+
 // things to know before seeing the patient, shared by the chart and the visit view
-export async function getPatientAlerts(patientId: number) {
+export async function getPatientAlerts(patientId: number, c: Clinician) {
   const allergies = await pool.query(
     `
-    SELECT al.allergy_id AS "allergyId", al.allergy_type_id AS "allergyTypeId", t.name, t.category, al.reaction, al.severity
+    SELECT ${ALLERGY_COLUMNS}
     FROM allergy al
     JOIN allergy_type t ON t.allergy_type_id = al.allergy_type_id
     WHERE al.patient_id = $1 AND al.is_active
@@ -141,8 +222,10 @@ export async function getPatientAlerts(patientId: number) {
     `,
     [patientId]
   );
-  // provider and status only, the policy number isn't needed for care
-  const insurance = await pool.query(`SELECT provider, status FROM insurance WHERE patient_id = $1`, [patientId]);
+  const homeMedications = await pool.query(
+    `SELECT ${HOME_MEDICATION_COLUMNS} FROM home_medication hm WHERE hm.patient_id = $1 AND hm.is_active ORDER BY hm.medication_name, hm.home_medication_id`,
+    [patientId]
+  );
   const missingForms = await pool.query(
     `
     SELECT f.name
@@ -153,11 +236,28 @@ export async function getPatientAlerts(patientId: number) {
     `,
     [patientId]
   );
-  return { allergies: allergies.rows, insurance: insurance.rows[0] ?? null, missingForms: missingForms.rows.map((f) => f.name as string) };
+  // nurses don't need insurance for care, and doctors only see the provider and status
+  const insurance = c.role === "doctor" ? await pool.query(`SELECT provider, status FROM insurance WHERE patient_id = $1`, [patientId]) : null;
+  return {
+    allergies: allergies.rows,
+    ...(insurance && { insurance: insurance.rows[0] ?? null }),
+    missingForms: missingForms.rows.map((f) => f.name as string),
+    homeMedications: homeMedications.rows,
+  };
+}
+
+async function listNursingNotes(db: Pool | PoolClient, by: "appointment" | "patient", id: number) {
+  const result = await db.query(
+    `SELECT ${NURSING_NOTE_COLUMNS} FROM nursing_note nn ${NURSING_NOTE_JOINS}
+     WHERE ${by === "appointment" ? "nn.appointment_id" : "a.patient_id"} = $1 ORDER BY nn.recorded_at DESC, nn.nursing_note_id DESC LIMIT 20`,
+    [id]
+  );
+  return result.rows;
 }
 
 // the clinical chart, read only after the caller has checked access
-export async function getPatientChart(patientId: number, doctorId: number) {
+export async function getPatientChart(patientId: number, c: Clinician) {
+  const doctor = c.role === "doctor";
   const patient = await pool.query(
     `
     SELECT
@@ -167,28 +267,12 @@ export async function getPatientChart(patientId: number, doctorId: number) {
       to_char(p.dob, 'YYYY-MM-DD') AS dob,
       p.gender,
       p.phone,
-      p.is_active AS "isActive",
-      EXISTS (SELECT 1 FROM patient_doctor pd WHERE pd.patient_id = p.patient_id AND pd.doctor_id = $2 AND pd.is_active) AS "assignedToMe"
+      p.is_active AS "isActive"
+      ${doctor ? `, EXISTS (SELECT 1 FROM patient_doctor pd WHERE pd.patient_id = p.patient_id AND pd.doctor_id = $2 AND pd.is_active) AS "assignedToMe"` : ""}
     FROM patient p
     WHERE p.patient_id = $1
     `,
-    [patientId, doctorId]
-  );
-  const homeMedications = await pool.query(
-    `
-    SELECT
-      home_medication_id AS "homeMedicationId",
-      medication_id AS "medicationId",
-      medication_name AS "medicationName",
-      category,
-      dosage,
-      frequency,
-      to_char(start_date, 'YYYY-MM-DD') AS "startDate"
-    FROM home_medication
-    WHERE patient_id = $1 AND is_active
-    ORDER BY medication_name
-    `,
-    [patientId]
+    doctor ? [patientId, c.employeeId] : [patientId]
   );
   const vitals = await pool.query(
     `SELECT ${VITALS_COLUMNS} FROM patient_vitals v JOIN employee e ON e.employee_id = v.recorded_by_employee_id
@@ -229,9 +313,9 @@ export async function getPatientChart(patientId: number, doctorId: number) {
 
   return {
     ...patient.rows[0],
-    ...(await getPatientAlerts(patientId)),
-    homeMedications: homeMedications.rows,
+    ...(await getPatientAlerts(patientId, c)),
     vitals: vitals.rows,
+    nursingNotes: await listNursingNotes(pool, "patient", patientId),
     visits: visits.rows,
     labOrders: labOrders.rows,
     prescriptions: prescriptions.rows,
@@ -282,6 +366,7 @@ export async function getVisitRecord(appointmentId: number) {
     summary: await getSummary(pool, appointmentId),
     diagnoses: await listVisitDiagnoses(pool, appointmentId),
     vitals: vitals.rows,
+    nursingNotes: await listNursingNotes(pool, "appointment", appointmentId),
     prescriptions: prescriptions.rows,
   };
 }
@@ -341,4 +426,241 @@ export async function addVisitDiagnoses(client: PoolClient, appointmentId: numbe
     );
   }
   return listVisitDiagnoses(client, appointmentId);
+}
+
+export interface VitalsReadings {
+  temperature?: number | null;
+  heartRate?: number | null;
+  systolic?: number | null;
+  diastolic?: number | null;
+  respiratoryRate?: number | null;
+  oxygenSaturation?: number | null;
+  weight?: number | null;
+  height?: number | null;
+}
+
+// every reading is a new row, so earlier readings stay as they were
+export async function recordVitals(c: Clinician, appointmentId: number, readings: VitalsReadings) {
+  return withTransaction(async (client) => {
+    const { patientId } = await lockVisit(client, appointmentId, c);
+    const created = await client.query(
+      `
+      INSERT INTO patient_vitals (patient_id, appointment_id, recorded_by_employee_id, temperature, heartrate_bpm, systolic_bp, diastolic_bp,
+        respiratory_rate, oxygen_saturation, weight_lbs, height_inches, recorded_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, ${CLINIC_NOW})
+      RETURNING vitals_id
+      `,
+      [
+        patientId,
+        appointmentId,
+        c.employeeId,
+        readings.temperature ?? null,
+        readings.heartRate ?? null,
+        readings.systolic ?? null,
+        readings.diastolic ?? null,
+        readings.respiratoryRate ?? null,
+        readings.oxygenSaturation ?? null,
+        readings.weight ?? null,
+        readings.height ?? null,
+      ]
+    );
+    const vitals = await client.query(`SELECT ${VITALS_COLUMNS} FROM patient_vitals v JOIN employee e ON e.employee_id = v.recorded_by_employee_id WHERE v.vitals_id = $1`, [
+      created.rows[0].vitals_id,
+    ]);
+    return vitals.rows[0];
+  });
+}
+
+async function getNursingNote(db: Pool | PoolClient, nursingNoteId: number) {
+  const result = await db.query(`SELECT ${NURSING_NOTE_COLUMNS} FROM nursing_note nn ${NURSING_NOTE_JOINS} WHERE nn.nursing_note_id = $1`, [nursingNoteId]);
+  return result.rows[0] ?? null;
+}
+
+// nursing notes have their own table, so they never touch the doctor's visit summary
+export async function addNursingNote(c: Clinician, appointmentId: number, note: string) {
+  return withTransaction(async (client) => {
+    await lockVisit(client, appointmentId, c);
+    const created = await client.query(
+      `INSERT INTO nursing_note (appointment_id, recorded_by_employee_id, note, recorded_at) VALUES ($1, $2, $3, ${CLINIC_NOW}) RETURNING nursing_note_id`,
+      [appointmentId, c.employeeId, note]
+    );
+    return getNursingNote(client, created.rows[0].nursing_note_id);
+  });
+}
+
+// only the nurse who wrote a note can change it, and only while the visit can still be documented
+export async function updateNursingNote(c: Clinician, nursingNoteId: number, note: string) {
+  const current = await pool.query(`SELECT appointment_id AS "appointmentId", recorded_by_employee_id AS "recordedById" FROM nursing_note WHERE nursing_note_id = $1`, [
+    nursingNoteId,
+  ]);
+  if (!current.rowCount) throw new HttpError(404, "Note not found");
+  const { appointmentId, recordedById } = current.rows[0];
+
+  return withTransaction(async (client) => {
+    await lockVisit(client, appointmentId, c).catch((err) => {
+      throw err instanceof HttpError && err.status === 404 ? new HttpError(404, "Note not found") : err;
+    });
+    if (recordedById !== c.employeeId) throw new HttpError(403, "Only the nurse who wrote a note can change it");
+    await client.query(`UPDATE nursing_note SET note = $2, updated_at = ${CLINIC_NOW} WHERE nursing_note_id = $1`, [nursingNoteId, note]);
+    return getNursingNote(client, nursingNoteId);
+  });
+}
+
+export async function listAllergyTypes() {
+  const result = await pool.query(`SELECT allergy_type_id AS "allergyTypeId", name, category FROM allergy_type WHERE is_active ORDER BY name`);
+  return result.rows;
+}
+
+async function getAllergy(db: Pool | PoolClient, allergyId: number) {
+  const result = await db.query(`SELECT ${ALLERGY_COLUMNS} FROM allergy al JOIN allergy_type t ON t.allergy_type_id = al.allergy_type_id WHERE al.allergy_id = $1`, [
+    allergyId,
+  ]);
+  return result.rows[0];
+}
+
+// locks the patient a record belongs to and says whether the record is still active
+async function lockRecordPatient(client: PoolClient, c: Clinician, table: "allergy" | "home_medication", recordId: number, missing: string) {
+  const record = await client.query(`SELECT patient_id AS "patientId" FROM ${table} WHERE ${table}_id = $1`, [recordId]);
+  if (!record.rowCount) throw new HttpError(404, missing);
+  await lockPatientInCare(client, c, record.rows[0].patientId, missing);
+  // read it once the patient is locked, so a change made while we waited is seen
+  const locked = await client.query(`SELECT is_active AS "isActive" FROM ${table} WHERE ${table}_id = $1`, [recordId]);
+  return locked.rows[0].isActive as boolean;
+}
+
+// the schema keeps one row per patient and allergy type, so a removed allergy comes back instead of being added twice
+export async function addAllergy(c: Clinician, patientId: number, input: { allergyTypeId: number; reaction: string | null; severity: string }) {
+  return withTransaction(async (client) => {
+    await lockPatientInCare(client, c, patientId);
+    const type = await client.query(`SELECT 1 FROM allergy_type WHERE allergy_type_id = $1 AND is_active`, [input.allergyTypeId]);
+    if (!type.rowCount) throw new HttpError(400, "Choose an active allergy");
+
+    const existing = await client.query(`SELECT allergy_id AS "allergyId", is_active AS "isActive" FROM allergy WHERE patient_id = $1 AND allergy_type_id = $2`, [
+      patientId,
+      input.allergyTypeId,
+    ]);
+    const old = existing.rows[0];
+    if (old?.isActive) throw new HttpError(409, "This allergy is already on the patient's chart. Edit it instead.");
+    if (old) {
+      await client.query(`UPDATE allergy SET reaction = $2, severity = $3, is_active = true WHERE allergy_id = $1`, [old.allergyId, input.reaction, input.severity]);
+      return getAllergy(client, old.allergyId);
+    }
+    const created = await client.query(`INSERT INTO allergy (patient_id, allergy_type_id, reaction, severity) VALUES ($1, $2, $3, $4) RETURNING allergy_id`, [
+      patientId,
+      input.allergyTypeId,
+      input.reaction,
+      input.severity,
+    ]);
+    return getAllergy(client, created.rows[0].allergy_id);
+  });
+}
+
+// only the fields that were sent change
+export async function updateAllergy(c: Clinician, allergyId: number, fields: { reaction?: string | null; severity?: string }) {
+  return withTransaction(async (client) => {
+    if (!(await lockRecordPatient(client, c, "allergy", allergyId, "Allergy not found"))) {
+      throw new HttpError(409, "This allergy was removed. Add it again instead.");
+    }
+    await client.query(`UPDATE allergy SET reaction = CASE WHEN $2 THEN $3 ELSE reaction END, severity = COALESCE($4, severity) WHERE allergy_id = $1`, [
+      allergyId,
+      fields.reaction !== undefined,
+      fields.reaction ?? null,
+      fields.severity ?? null,
+    ]);
+    return getAllergy(client, allergyId);
+  });
+}
+
+// removed allergies stay in the database as inactive
+export async function removeAllergy(c: Clinician, allergyId: number) {
+  return withTransaction(async (client) => {
+    if (!(await lockRecordPatient(client, c, "allergy", allergyId, "Allergy not found"))) throw new HttpError(409, "This allergy was already removed");
+    await client.query(`UPDATE allergy SET is_active = false WHERE allergy_id = $1`, [allergyId]);
+    return getAllergy(client, allergyId);
+  });
+}
+
+export async function listMedications() {
+  const result = await pool.query(`SELECT medication_id AS "medicationId", name, manufacturer FROM medication WHERE is_active ORDER BY name`);
+  return result.rows;
+}
+
+async function getHomeMedication(db: Pool | PoolClient, homeMedicationId: number) {
+  const result = await db.query(`SELECT ${HOME_MEDICATION_COLUMNS} FROM home_medication hm WHERE hm.home_medication_id = $1`, [homeMedicationId]);
+  return result.rows[0];
+}
+
+export interface HomeMedicationFields {
+  category?: string | null;
+  dosage?: string | null;
+  frequency?: string | null;
+}
+
+// what the patient already takes at home, kept apart from prescriptions written here
+// a medication picked from the list uses its own name, otherwise the typed name is kept
+export async function addHomeMedication(c: Clinician, patientId: number, input: HomeMedicationFields & { medicationId?: number | null; medicationName?: string | null }) {
+  return withTransaction(async (client) => {
+    await lockPatientInCare(client, c, patientId);
+    let name = input.medicationName ?? null;
+    if (input.medicationId) {
+      const medication = await client.query(`SELECT name FROM medication WHERE medication_id = $1 AND is_active`, [input.medicationId]);
+      if (!medication.rowCount) throw new HttpError(400, "Choose an active medication");
+      name = medication.rows[0].name;
+    }
+
+    const duplicate = await client.query(
+      `SELECT 1 FROM home_medication WHERE patient_id = $1 AND is_active AND (medication_id = $2 OR lower(medication_name) = lower($3::text))`,
+      [patientId, input.medicationId ?? null, name]
+    );
+    if (duplicate.rowCount) throw new HttpError(409, "The patient already takes this medication. Edit it instead.");
+
+    const created = await client.query(
+      `
+      INSERT INTO home_medication (patient_id, medication_id, medication_name, category, dosage, frequency, start_date)
+      VALUES ($1, $2, $3, $4, $5, $6, ${CLINIC_TODAY})
+      RETURNING home_medication_id
+      `,
+      [patientId, input.medicationId ?? null, name, input.category ?? null, input.dosage ?? null, input.frequency ?? null]
+    );
+    return getHomeMedication(client, created.rows[0].home_medication_id);
+  });
+}
+
+// only the fields that were sent change
+export async function updateHomeMedication(c: Clinician, homeMedicationId: number, fields: HomeMedicationFields) {
+  return withTransaction(async (client) => {
+    if (!(await lockRecordPatient(client, c, "home_medication", homeMedicationId, "Home medication not found"))) {
+      throw new HttpError(409, "This medication was stopped. Add it again instead.");
+    }
+    await client.query(
+      `
+      UPDATE home_medication SET
+        category = CASE WHEN $2 THEN $3 ELSE category END,
+        dosage = CASE WHEN $4 THEN $5 ELSE dosage END,
+        frequency = CASE WHEN $6 THEN $7 ELSE frequency END
+      WHERE home_medication_id = $1
+      `,
+      [
+        homeMedicationId,
+        fields.category !== undefined,
+        fields.category ?? null,
+        fields.dosage !== undefined,
+        fields.dosage ?? null,
+        fields.frequency !== undefined,
+        fields.frequency ?? null,
+      ]
+    );
+    return getHomeMedication(client, homeMedicationId);
+  });
+}
+
+// stopped home medications stay in the database as inactive
+export async function stopHomeMedication(c: Clinician, homeMedicationId: number) {
+  return withTransaction(async (client) => {
+    if (!(await lockRecordPatient(client, c, "home_medication", homeMedicationId, "Home medication not found"))) {
+      throw new HttpError(409, "This medication was already stopped");
+    }
+    await client.query(`UPDATE home_medication SET is_active = false WHERE home_medication_id = $1`, [homeMedicationId]);
+    return getHomeMedication(client, homeMedicationId);
+  });
 }

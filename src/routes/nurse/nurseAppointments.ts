@@ -2,12 +2,35 @@ import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../../lib/db.js";
 import { HttpError } from "../../middleware/errorHandler.js";
-import { listAppointments } from "../../services/booking.js";
+import { getAppointment, listAppointments } from "../../services/booking.js";
+import { addNursingNote, asClinician, assertCanSeePatient, getPatientAlerts, getVisitRecord, recordVitals, updateNursingNote } from "../../services/clinical.js";
 import { bookingDate } from "../booking.js";
 
 export const nurseAppointmentsRouter = Router();
 
 const listQuery = z.object({ date: bookingDate.optional() });
+const id = (label: string) => z.coerce.number(`Choose ${label}`).int(`Choose ${label}`).positive(`Choose ${label}`);
+
+// the limits are what the columns can hold, not clinical ranges
+const decimal = (label: string) =>
+  z.number(`${label} must be a number`).positive(`${label} must be more than 0`).max(99999999, `${label} is too large`).nullish();
+const whole = (label: string) =>
+  z.number(`${label} must be a number`).int(`${label} must be a whole number`).positive(`${label} must be more than 0`).max(2147483647, `${label} is too large`).nullish();
+
+const vitalsBody = z
+  .object({
+    temperature: decimal("Temperature"),
+    heartRate: whole("Heart rate"),
+    systolic: whole("Systolic pressure"),
+    diastolic: whole("Diastolic pressure"),
+    respiratoryRate: whole("Respiratory rate"),
+    oxygenSaturation: whole("Oxygen saturation").refine((value) => value == null || value <= 100, "Oxygen saturation can't be over 100 percent"),
+    weight: decimal("Weight"),
+    height: decimal("Height"),
+  })
+  .refine((body) => Object.values(body).some((value) => value != null), "Enter at least one reading");
+
+const noteBody = z.object({ note: z.string("Write the note").trim().min(1, "Write the note").max(10000, "Keep the note under 10000 characters") });
 
 // get the appointments at my office on one day (no date = today)
 nurseAppointmentsRouter.get("/api/nurse/appointments", async (req, res) => {
@@ -20,89 +43,32 @@ nurseAppointmentsRouter.get("/api/nurse/appointments", async (req, res) => {
 
 // get one appointment for the intake page
 nurseAppointmentsRouter.get("/api/nurse/appointments/:id", async (req, res) => {
-  const nurseId = req.session.employeeId;
-  const appointmentId = Number(req.params.id);
-
-  // get the appointment and its patient, only if it is at my office
-  const appointment = await pool.query(
-    ``,
-    [appointmentId, nurseId]
-  );
-  if (appointment.rowCount === 0) {
-    res.status(404).json({ error: "Appointment not found at your office" });
-    return;
-  }
-  const patientId = appointment.rows[0].patientId;
-
-  // get the patient's active allergies
-  const allergies = await pool.query(
-    ``,
-    [patientId]
-  );
-
-  // get the patient's active home medications
-  const homeMedications = await pool.query(
-    ``,
-    [patientId]
-  );
-
-  // get the vitals recorded for this visit, newest first, with abnormal/critical flags
-  const vitals = await pool.query(
-    ``,
-    [appointmentId]
-  );
+  const nurse = asClinician(req.user, "nurse");
+  const appointment = await getAppointment(pool, id("an appointment").parse(req.params.id));
+  if (!appointment || appointment.officeId !== nurse.officeId) throw new HttpError(404, "Appointment not found");
+  await assertCanSeePatient(nurse, appointment.patientId);
 
   res.json({
-    ...appointment.rows[0],
-    allergies: allergies.rows,
-    homeMedications: homeMedications.rows,
-    vitals: vitals.rows,
+    ...appointment,
+    ...(await getVisitRecord(appointment.appointmentId)),
+    ...(await getPatientAlerts(appointment.patientId, nurse)),
   });
 });
 
 // record vitals for a visit
 nurseAppointmentsRouter.post("/api/nurse/appointments/:id/vitals", async (req, res) => {
-  const nurseId = req.session.employeeId;
-  const appointmentId = Number(req.params.id);
-  const temperature = req.body.temperature ? Number(req.body.temperature) : null;
-  const heartRate = req.body.heartRate ? Number(req.body.heartRate) : null;
-  const systolic = req.body.systolic ? Number(req.body.systolic) : null;
-  const diastolic = req.body.diastolic ? Number(req.body.diastolic) : null;
-  const respiratoryRate = req.body.respiratoryRate ? Number(req.body.respiratoryRate) : null;
-  const oxygenSaturation = req.body.oxygenSaturation ? Number(req.body.oxygenSaturation) : null;
-  const weight = req.body.weight ? Number(req.body.weight) : null;
-  const height = req.body.height ? Number(req.body.height) : null;
+  const appointmentId = id("an appointment").parse(req.params.id);
+  res.status(201).json(await recordVitals(asClinician(req.user, "nurse"), appointmentId, vitalsBody.parse(req.body)));
+});
 
-  const readings = [temperature, heartRate, systolic, diastolic, respiratoryRate, oxygenSaturation, weight, height];
-  if (readings.every((v) => v === null)) {
-    res.status(400).json({ error: "Enter at least one reading" });
-    return;
-  }
-  if (readings.some((v) => v !== null && !(v > 0))) {
-    res.status(400).json({ error: "Readings must be numbers more than 0" });
-    return;
-  }
-  const wholeNumbers = [heartRate, systolic, diastolic, respiratoryRate, oxygenSaturation];
-  if (wholeNumbers.some((v) => v !== null && !Number.isInteger(v))) {
-    res.status(400).json({ error: "Heart rate, blood pressure, breathing rate and oxygen must be whole numbers" });
-    return;
-  }
+// add a nursing note to a visit
+nurseAppointmentsRouter.post("/api/nurse/appointments/:id/nursing-notes", async (req, res) => {
+  const appointmentId = id("an appointment").parse(req.params.id);
+  res.status(201).json(await addNursingNote(asClinician(req.user, "nurse"), appointmentId, noteBody.parse(req.body).note));
+});
 
-  // get the patient of this appointment (my office, scheduled or completed, today or earlier)
-  const appointment = await pool.query(
-    ``,
-    [appointmentId, nurseId]
-  );
-  if (appointment.rowCount === 0) {
-    res.status(400).json({ error: "Vitals can only be recorded for today's or past visits at your office" });
-    return;
-  }
-
-  // save the vitals for this visit, recorded by me now (Houston time)
-  const result = await pool.query(
-    ``,
-    [appointment.rows[0].patient_id, appointmentId, nurseId, temperature, heartRate, systolic, diastolic, respiratoryRate, oxygenSaturation, weight, height]
-  );
-
-  res.status(201).json(result.rows[0]);
+// change a nursing note I wrote
+nurseAppointmentsRouter.patch("/api/nurse/nursing-notes/:id", async (req, res) => {
+  const nursingNoteId = id("a note").parse(req.params.id);
+  res.json(await updateNursingNote(asClinician(req.user, "nurse"), nursingNoteId, noteBody.parse(req.body).note));
 });

@@ -1,47 +1,31 @@
 import { Router } from "express";
 import { pool } from "../../lib/db.js";
+import { listAppointments } from "../../services/booking.js";
+import { asClinician } from "../../services/clinical.js";
 
 export const nurseDashboardRouter = Router();
 
 // get dashboard numbers and the waiting list
 nurseDashboardRouter.get("/api/nurse/dashboard", async (req, res) => {
-  const nurseId = req.session.employeeId;
+  const { officeId } = asClinician(req.user, "nurse");
 
-  // get how many scheduled or completed appointments my office has today (Houston date)
-  const todayAppointments = await pool.query(
-    ``,
-    [nurseId]
-  );
+  // today's visits come from the booking service, so they're counted the same way as the appointment list
+  const today = (await listAppointments({ officeId }, { when: "today", includeCancelled: false })).filter((a) => a.status !== "No Show");
+  const withVitals = await pool.query(`SELECT DISTINCT appointment_id AS "appointmentId" FROM patient_vitals WHERE appointment_id = ANY($1::int[])`, [
+    today.map((a) => a.appointmentId),
+  ]);
+  const hasVitals = new Set(withVitals.rows.map((v) => v.appointmentId));
 
-  // get how many of today's scheduled appointments at my office have no vitals yet
-  const waitingForVitals = await pool.query(
-    ``,
-    [nurseId]
-  );
-
-  // get how many vitals recorded today at my office have a critical reading
-  const criticalToday = await pool.query(
-    ``,
-    [nurseId]
-  );
-
-  // get how many active supplies at my office are at or below their reorder threshold
-  const lowStock = await pool.query(
-    ``,
-    [nurseId]
-  );
-
-  // get today's patients at my office still waiting for vitals, earliest first
-  const waitingList = await pool.query(
-    ``,
-    [nurseId]
-  );
+  // checked in patients still in the clinic, and the ones with no vitals for this visit yet, earliest arrival first
+  const inClinic = today.filter((a) => a.status === "Scheduled" && a.checkedIn);
+  const waitingList = inClinic.filter((a) => !hasVitals.has(a.appointmentId)).sort((a, b) => a.checkedInAt.localeCompare(b.checkedInAt));
 
   res.json({
-    todayAppointments: todayAppointments.rows[0].count,
-    waitingForVitals: waitingForVitals.rows[0].count,
-    criticalToday: criticalToday.rows[0].count,
-    lowStock: lowStock.rows[0].count,
-    waitingList: waitingList.rows,
+    todayAppointments: today.length,
+    notArrived: today.filter((a) => a.status === "Scheduled" && !a.checkedIn).length,
+    checkedIn: inClinic.length,
+    completed: today.filter((a) => a.status === "Completed").length,
+    waitingForVitals: waitingList.length,
+    waitingList,
   });
 });
