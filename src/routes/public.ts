@@ -3,6 +3,7 @@ import type { NextFunction, Request, Response } from "express";
 import { z, ZodError } from "zod";
 import { pool } from "../lib/db.js";
 import { HttpError } from "../middleware/errorHandler.js";
+import { findAvailability } from "../services/booking.js";
 
 // read only clinic information for the public website, no login required
 export const publicRouter = Router();
@@ -163,6 +164,37 @@ publicRouter.get("/specialties", async (_req, res) => {
   `);
 
   res.json(result.rows);
+});
+
+const availabilityQuery = z.object({
+  specialtyId: idParam,
+  date: z.iso.date("Date must look like 2026-11-10"),
+  days: z.coerce.number().int().min(1).max(14, "Search up to 14 days at a time").default(1),
+  doctorId: idParam.optional(),
+  officeId: idParam.optional(),
+});
+
+// open appointment times for visitors, searched without any patient or session
+publicRouter.get("/availability", async (req, res) => {
+  const { specialtyId, date, days, doctorId, officeId } = availabilityQuery.parse(req.query);
+  const slots = await findAvailability({ specialtyId, date, days, doctorId, officeId });
+
+  // only public fields, so a referral ID never reaches a visitor
+  res.json(
+    slots.map((slot) => ({
+      date: slot.date,
+      doctorId: slot.doctorId,
+      doctorName: slot.doctorName,
+      officeId: slot.officeId,
+      officeName: slot.officeName,
+      specialtyId: slot.specialtyId,
+      specialty: slot.specialty,
+      requiresReferral: slot.requiresReferral,
+      timeSlotId: slot.timeSlotId,
+      startTime: slot.startTime,
+      endTime: slot.endTime,
+    }))
+  );
 });
 
 // keep database and server details out of public error messages

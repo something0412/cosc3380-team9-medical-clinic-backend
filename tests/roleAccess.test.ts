@@ -70,6 +70,11 @@ const ENDPOINTS: Endpoint[] = [
     `/api/public/offices/${ids.mainOffice}`,
     "/api/public/specialties",
   ].map((path) => ({ label: `GET ${path}`, path: fixed(path), expect: PUBLIC })),
+  {
+    label: "GET /api/public/availability",
+    path: fixed(`/api/public/availability?specialtyId=${ids.cardiology}&date=2030-01-07`),
+    expect: PUBLIC,
+  },
   { label: "GET /api/auth/me", path: fixed("/api/auth/me"), expect: LOGGED_IN },
   { label: "GET /api/patients", path: fixed("/api/patients"), expect: STAFF_ONLY },
   { label: "GET /api/availability", path: fixed("/api/availability?date=2030-01-07"), expect: BOOKING },

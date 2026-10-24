@@ -14,7 +14,7 @@ Backend tests that run the real Express app against a local PostgreSQL test data
 - `admin/clinicDate.test.ts` checks that schedule and time slot checks use the Chicago date, even when the database date has already rolled over.
 - `admin/integration.test.ts` covers workflows across features, like setting up a doctor's schedule from scratch, deactivation dependencies, the login lifecycle, appointment protection, and data integrity.
 - `public.test.ts` covers the public doctor, office, and specialty endpoints, including active record filtering, practice offices from active schedules only, doctor counts, invalid and missing IDs, and no private fields in responses.
-- `appointments.test.ts` covers availability, booking, referrals, simultaneous bookings, Admin schedule changes, cancellation, and booking permissions.
+- `appointments.test.ts` covers availability, public availability for visitors, booking, referrals, simultaneous bookings, Admin schedule changes, cancellation, and booking permissions.
 - `triggers.test.ts` covers the appointment history, employee audit, and appointment conflict triggers, plus row level security on the audit tables.
 - `profiles.test.ts` covers patient and staff profile updates, emergency contacts, insurance, certificates, password rules, ownership checks, and registration of every patient and staff route.
 - `roleAccess.test.ts` calls every GET endpoint as anonymous, patient, doctor, nurse, receptionist, and admin and checks each against the expected permissions. It writes what each role got back to `tests/output/role-access/`, which Git ignores, with one `<role>.json` per role and a `summary.md` matrix.
