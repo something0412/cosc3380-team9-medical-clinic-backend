@@ -9,7 +9,6 @@ const idParam = z.coerce.number().int().positive();
 const listQuery = z.object({ status: z.enum(["active", "inactive", "all"]).default("active") });
 const statusSchema = z.object({ isActive: z.boolean() });
 
-// get patient list
 adminPatientsRouter.get("/", async (req, res) => {
   const { status } = listQuery.parse(req.query);
 
@@ -36,7 +35,7 @@ adminPatientsRouter.get("/", async (req, res) => {
   res.json(result.rows);
 });
 
-// activate or deactivate patient
+// activate or deactivate a patient and their login
 adminPatientsRouter.patch("/:id/status", async (req, res) => {
   const patientId = idParam.parse(req.params.id);
   const { isActive } = statusSchema.parse(req.body);

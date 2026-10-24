@@ -89,7 +89,6 @@ adminOfficesRouter.get("/", async (_req, res) => {
   res.json(result.rows);
 });
 
-// one office with its employee and schedule counts
 adminOfficesRouter.get("/:id", async (req, res) => {
   const office = await loadOffice(idParam.parse(req.params.id));
   if (!office) throw new HttpError(404, "Office not found");
