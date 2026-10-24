@@ -48,7 +48,7 @@ async function bookAppointment(doctorId: number, day: string, officeId: number, 
   return rows[0].appointment_id as number;
 }
 
-// employees, offices, specialties, assignments, and appointments; schedule changes must leave them alone
+// employees, offices, specialties, assignments, and appointments, which schedule changes must leave alone
 async function relatedSnapshot() {
   const { rows } = await app.db.query(`
     SELECT
@@ -175,7 +175,7 @@ describe("doctor schedules", () => {
   });
 
   test("create rejects duplicates, bad weekdays, and unusable records", async () => {
-    // a second doctor and an inactive shift for the inactive-record cases
+    // a second doctor and an inactive shift for the inactive record cases
     await app.db.query(`INSERT INTO shift_type (name, start_time, end_time, is_active) VALUES ('Closed Shift', '18:00', '20:00', false)`);
     const closedShift = (await app.db.query(`SELECT shift_type_id FROM shift_type WHERE name = 'Closed Shift'`)).rows[0].shift_type_id;
     const friday = { doctorId: ids.doctor, dayOfWeek: "Friday", officeId: ids.mainOffice, specialtyId: ids.familyMedicine, shiftTypeId: ids.morningShift };

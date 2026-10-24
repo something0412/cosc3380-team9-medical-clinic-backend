@@ -1,26 +1,26 @@
 -- Sample data loaded before each test file. IDs are generated in insert order.
 -- Password hashes are replaced with TEST_PASSWORD after loading.
 
--- employee types: 1 Administrator, 2 Doctor, 3 Nurse, 4 Receptionist, 5 Intern (inactive)
+-- employee type IDs are 1 Administrator, 2 Doctor, 3 Nurse, 4 Receptionist, 5 Intern (inactive)
 INSERT INTO employee_types (type_name) VALUES ('Administrator'), ('Doctor'), ('Nurse'), ('Receptionist');
 INSERT INTO employee_types (type_name, is_active) VALUES ('Intern', false);
 
--- offices: 1 Main Street, 2 Westside, 3 Closed (inactive)
+-- office IDs are 1 Main Street, 2 Westside, 3 Closed (inactive)
 INSERT INTO office (name, street, city, state, zip, phone) VALUES
   ('Main Street Clinic', '1 Main St', 'Houston', 'TX', '77001', '713-555-0100'),
   ('Westside Clinic', '2 West St', 'Houston', 'TX', '77002', '713-555-0200');
 INSERT INTO office (name, street, city, state, zip, phone, is_active) VALUES
   ('Closed Clinic', '3 Old St', 'Houston', 'TX', '77003', '713-555-0300', false);
 
--- specialties: 1 Family Medicine, 2 Cardiology (referral), 3 Retired Specialty (inactive)
+-- specialty IDs are 1 Family Medicine, 2 Cardiology (referral), 3 Retired Specialty (inactive)
 INSERT INTO specialty (name) VALUES ('Family Medicine');
 INSERT INTO specialty (name, requires_referral) VALUES ('Cardiology', true);
 INSERT INTO specialty (name, is_active) VALUES ('Retired Specialty', false);
 
--- shift 1: Morning
+-- shift 1 is Morning
 INSERT INTO shift_type (name, start_time, end_time) VALUES ('Morning', '08:00', '12:00');
 
--- employees: 1 admin, 2 doctor, 3 nurse, 4 receptionist (no login)
+-- employee IDs are 1 admin, 2 doctor, 3 nurse, 4 receptionist (no login)
 INSERT INTO employee (first_name, last_name, dob, employee_type_id, phone, email, office_id) VALUES
   ('Ada', 'Admin', '1980-01-01', 1, '713-555-1000', 'ada@test.org', 1),
   ('Dan', 'Doctor', '1975-05-05', 2, '713-555-1001', 'dan@test.org', 1),

@@ -6,32 +6,36 @@ Backend tests that run the real Express app against a local PostgreSQL test data
 
 ## What's covered
 
-- `auth.test.ts` — staff and patient login, logout, inactive and disabled logins, and Admin-only access for every Admin endpoint.
-- `admin/employees.test.ts` — employee directory, create/edit, doctor and nurse details, and account management.
-- `admin/offices.test.ts` — office directory, create/edit, validation, and activation rules.
-- `admin/specialties.test.ts` — specialty directory, create/edit, referral rule, and activation rules.
-- `admin/schedules.test.ts` — doctor schedules, shifts, time slots, and booked-appointment protection.
-- `admin/integration.test.ts` — workflows across features: setting up a doctor's schedule from scratch, deactivation dependencies, login lifecycle, appointment protection, and data integrity.
-- `public.test.ts` — public doctor, office, and specialty endpoints: active record filtering, practice offices from active schedules only, doctor counts, invalid and missing IDs, and no private fields in responses.
-- `roleAccess.test.ts` — calls every GET endpoint as anonymous, patient, doctor, nurse, receptionist, and admin, checks each against the expected permissions, and writes what each role got back to `tests/output/role-access/` (git-ignored): one `<role>.json` per role plus a `summary.md` matrix.
+- `auth.test.ts` covers staff and patient login, logout, inactive and disabled logins, and Admin only access for every Admin endpoint.
+- `admin/employees.test.ts` covers the employee directory, creating and editing employees, doctor and nurse details, and account management.
+- `admin/offices.test.ts` covers the office directory, creating and editing offices, validation, and activation rules.
+- `admin/specialties.test.ts` covers the specialty directory, creating and editing specialties, the referral rule, and activation rules.
+- `admin/schedules.test.ts` covers doctor schedules, shifts, time slots, and protection for booked appointments.
+- `admin/clinicDate.test.ts` checks that schedule and time slot checks use the Chicago date, even when the database date has already rolled over.
+- `admin/integration.test.ts` covers workflows across features, like setting up a doctor's schedule from scratch, deactivation dependencies, the login lifecycle, appointment protection, and data integrity.
+- `public.test.ts` covers the public doctor, office, and specialty endpoints, including active record filtering, practice offices from active schedules only, doctor counts, invalid and missing IDs, and no private fields in responses.
+- `appointments.test.ts` covers availability, booking, referrals, simultaneous bookings, Admin schedule changes, cancellation, and booking permissions.
+- `triggers.test.ts` covers the appointment history, employee audit, and appointment conflict triggers, plus row level security on the audit tables.
+- `profiles.test.ts` covers patient and staff profile updates, emergency contacts, insurance, certificates, password rules, ownership checks, and registration of every patient and staff route.
+- `roleAccess.test.ts` calls every GET endpoint as anonymous, patient, doctor, nurse, receptionist, and admin and checks each against the expected permissions. It writes what each role got back to `tests/output/role-access/`, which Git ignores, with one `<role>.json` per role and a `summary.md` matrix.
 
 ## Setup
 
 You need Node.js 22 and a local PostgreSQL server.
 
-1. Create an empty test database:
+1. Create an empty test database.
 
    ```bash
    createdb cosc3380_test
    ```
 
-2. Add `TEST_DATABASE_URL` to your backend `.env` (it's git-ignored):
+2. Add `TEST_DATABASE_URL` to your backend `.env`, which Git ignores.
 
    ```
    TEST_DATABASE_URL=postgres://postgres:yourpassword@localhost:5432/cosc3380_test
    ```
 
-Each test file rebuilds the database from `database/schema.sql` and loads sample data from `tests/helpers/fixtures.sql`, so nothing else needs to be set up.
+Each test file rebuilds the database from `database/schema.sql`, applies any migrations listed in `tests/helpers/testDb.ts` (none right now), and loads sample data from `tests/helpers/fixtures.sql`, so nothing else needs to be set up.
 
 ## Running
 
@@ -42,4 +46,4 @@ npm run test:file -- tests/admin/offices.test.ts    # one file
 
 Test files run one at a time because they share the test database.
 
-To type-check the tests: `npx tsc -p tests`.
+Type check the tests with `npx tsc -p tests`.
