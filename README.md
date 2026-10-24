@@ -40,17 +40,18 @@ npx tsc -p tests
 
 ```text
 src/
-  app.ts               sets up the Express app and mounts the routes
-  routes/              route files, grouped by role
-  services/booking.ts  shared booking rules for patients and receptionists
-  services/patients.ts shared patient rules for sign up, the front desk, profiles, and Admin
-  middleware/          signed in user check, error handler, and role checks
-  lib/                 database pool, transactions, password hashing, and clinic time
-database/              schema snapshot and migrations
-tests/                 backend tests
+  app.ts                sets up the Express app and mounts the routes
+  routes/               route files, grouped by role
+  services/booking.ts   shared booking rules for patients and receptionists
+  services/patients.ts  shared patient rules for sign up, the front desk, profiles, and Admin
+  services/referrals.ts referral rules for doctors and the patient portal
+  middleware/           signed in user check, error handler, and role checks
+  lib/                  database pool, transactions, password hashing, and clinic time
+database/               schema snapshot and migrations
+tests/                  backend tests
 ```
 
-Most route files write their full `/api/...` paths and are mounted in `app.ts`. The public website routes are under `/api/public` and the admin routes are under `/api/admin`. Most doctor, nurse, and receptionist routes are still unfinished, but the receptionist patient and appointment routes and the doctor and nurse appointment lists work.
+Most route files write their full `/api/...` paths and are mounted in `app.ts`. The public website routes are under `/api/public` and the admin routes are under `/api/admin`. Most doctor, nurse, and receptionist routes are still unfinished, but the receptionist patient and appointment routes, the doctor and nurse appointment lists, and doctor referrals work.
 
 ## Writing routes
 
@@ -60,6 +61,7 @@ Most route files write their full `/api/...` paths and are mounted in `app.ts`. 
 - Throw `new HttpError(404, "Appointment not found")` for expected errors. Anything unexpected becomes a generic 500 without database details.
 - Use `CLINIC_TODAY` and `CLINIC_NOW` from `src/lib/clinicTime.ts` for clinic dates. The database runs on UTC, so `CURRENT_DATE` can already be tomorrow in Chicago.
 - Booking, check in, check out, No Show, and the staff appointment lists go through `src/services/booking.ts`. Don't add separate scheduling checks.
+- Creating, approving, denying, and listing referrals go through `src/services/referrals.ts`. Booking still decides whether a referral can be used for an appointment.
 - Patient sign up, front desk registration, portal logins, status, contact info, emergency contacts, and insurance go through `src/services/patients.ts`.
 
 ## Database
