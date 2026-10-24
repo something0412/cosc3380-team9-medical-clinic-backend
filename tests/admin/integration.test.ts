@@ -254,7 +254,7 @@ describe("B: deactivation dependencies", () => {
     const schedule = (await admin.get(`/api/admin/schedules/${doctor.employeeId}/Sunday`)).body;
     assert.equal(schedule.isActive, true);
     assert.equal(schedule.doctorIsActive, false);
-    // the schedule can still be turned off, and the doctor disappears from new-assignment options
+    // the schedule can still be turned off, and the doctor disappears from the options for new assignments
     assert.equal((await admin.patch(`/api/admin/schedules/${doctor.employeeId}/Sunday/status`, { isActive: false })).status, 200);
     const options = (await admin.get("/api/admin/schedules/doctor-options")).body;
     assert.equal(options.some((d: { doctorId: number }) => d.doctorId === doctor.employeeId), false);
@@ -285,7 +285,7 @@ describe("C: employee accounts and sign-in", () => {
     await admin.patch(`${path}/status`, { isActive: true });
     assert.equal(await app.staffLoginStatus(id, "First-Pass-1"), 200);
 
-    // reset while disabled: stays disabled, old password stops working once re-enabled
+    // a reset while disabled keeps the login disabled, and the old password stops working once it's enabled again
     await admin.patch(`${path}/login-status`, { loginActive: false });
     assert.equal((await admin.put(`${path}/password`, { password: "Second-Pass-2" })).status, 204);
     assert.equal((await admin.get(path)).body.loginActive, false);
@@ -306,7 +306,7 @@ describe("C: employee accounts and sign-in", () => {
     assert.equal((await asReceptionist.get("/api/auth/me")).body.role, "staff");
     assert.equal((await asReceptionist.get("/api/admin/employees")).status, 403);
 
-    // promote to Administrator; a new login gets the admin role
+    // promote to Administrator, and a new login gets the admin role
     assert.equal((await admin.put(`/api/admin/employees/${employee.employeeId}`, { ...body, employeeTypeId: 1 })).status, 200);
     const asAdmin = await app.loginStaff(employee.employeeId, "Role-Pass-1");
     assert.equal((await asAdmin.get("/api/auth/me")).body.role, "admin");

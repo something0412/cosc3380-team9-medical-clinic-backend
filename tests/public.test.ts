@@ -151,8 +151,8 @@ describe("public specialties", () => {
   test("lists active specialties with referral rules and active doctor counts", async () => {
     const res = await visitor.get("/api/public/specialties");
     assert.equal(res.status, 200);
-    // Cardiology: Dan and Ella, not Sara's inactive assignment
-    // Family Medicine: Dan and Sara once each, not inactive Ivan
+    // Cardiology has Dan and Ella, not Sara's inactive assignment
+    // Family Medicine has Dan and Sara once each, not inactive Ivan
     assert.deepEqual(res.body, [
       { specialtyId: ids.cardiology, name: "Cardiology", requiresReferral: true, doctorCount: 2 },
       { specialtyId: dermatology, name: "Dermatology", requiresReferral: false, doctorCount: 0 },

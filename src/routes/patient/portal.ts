@@ -1,88 +1,10 @@
 import { Router } from "express";
-import { pool } from "../lib/db.js";
+import { pool } from "../../lib/db.js";
 
-export const patientsRouter = Router();
-
-// get all patients
-patientsRouter.get("/api/patients", async (_req, res) => {
-    const result = await pool.query(`
-        SELECT
-            patient_id AS "patientId",
-            first_name AS "firstName",
-            last_name AS "lastName",
-            dob,
-            phone,
-            email,
-            is_active AS "isActive"
-        FROM patient
-        ORDER BY patient_id
-    `);
-
-    res.json(result.rows);
-});
-
-
-// add a new patient
-patientsRouter.post("/api/patients", async (req, res) => {
-    const {
-        firstName,
-        lastName,
-        dob,
-        gender,
-        phone,
-        email,
-        address
-    } = req.body ?? {};
-
-    if (
-        typeof firstName !== "string" || !firstName.trim() ||
-        typeof lastName !== "string" || !lastName.trim() ||
-        typeof dob !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(dob) ||
-        typeof phone !== "string" || !phone.trim()
-    ) {
-        res.status(400).json({ error: "Valid first name, last name, DOB, and phone are required" });
-        return;
-    }
-
-    if ([gender, email, address].some((value) => value != null && typeof value !== "string")) {
-        res.status(400).json({ error: "Invalid patient information" });
-        return;
-    }
-
-    const result = await pool.query(
-        `
-        INSERT INTO patient
-            (first_name, last_name, dob, gender, phone, email, address, is_active)
-        VALUES
-            ($1, $2, $3, $4, $5, $6, $7, true)
-        RETURNING
-            patient_id AS "patientId",
-            first_name AS "firstName",
-            last_name AS "lastName",
-            dob,
-            gender,
-            phone,
-            email,
-            address,
-            is_active AS "isActive"
-        `,
-        [
-            firstName,
-            lastName,
-            dob,
-            gender || null,
-            phone,
-            email || null,
-            address || null
-        ]
-    );
-
-    res.status(201).json(result.rows[0]);
-});
-
+export const patientPortalRouter = Router();
 
 // get patient appointments
-patientsRouter.get("/api/patient/:id/appointments", async (req, res) => {
+patientPortalRouter.get("/api/patient/:id/appointments", async (req, res) => {
     const patientId = Number(req.params.id);
 
     const result = await pool.query(
@@ -109,7 +31,7 @@ patientsRouter.get("/api/patient/:id/appointments", async (req, res) => {
 
 
 // get patient forms
-patientsRouter.get("/api/patient/:id/forms", async (req, res) => {
+patientPortalRouter.get("/api/patient/:id/forms", async (req, res) => {
     const patientId = Number(req.params.id);
 
     const result = await pool.query(
@@ -143,7 +65,7 @@ patientsRouter.get("/api/patient/:id/forms", async (req, res) => {
 
 
 // get patient billing information
-patientsRouter.get("/api/patient/:id/billing", async (req, res) => {
+patientPortalRouter.get("/api/patient/:id/billing", async (req, res) => {
     const patientId = Number(req.params.id);
 
     const invoices = await pool.query(
@@ -185,7 +107,7 @@ patientsRouter.get("/api/patient/:id/billing", async (req, res) => {
 
 
 // get patient medical records
-patientsRouter.get("/api/patient/:id/records", async (req, res) => {
+patientPortalRouter.get("/api/patient/:id/records", async (req, res) => {
     const patientId = Number(req.params.id);
 
     const visits = await pool.query(
@@ -193,7 +115,13 @@ patientsRouter.get("/api/patient/:id/records", async (req, res) => {
         SELECT
             a.appointment_id AS "appointmentId",
             a.appointment_date AS "visitDate",
-            s.diagnosis,
+            -- a visit can have several diagnoses, null when none are recorded
+            (
+                SELECT string_agg(d.name, ', ' ORDER BY d.created_at, d.visit_diagnosis_id)
+                FROM visit_diagnosis d
+                WHERE d.appointment_id = a.appointment_id
+            ) AS diagnosis,
+            s.visit_reason AS "visitReason",
             s.notes
         FROM appointment_summary s
         JOIN appointment a ON s.appointment_id = a.appointment_id
@@ -244,7 +172,7 @@ patientsRouter.get("/api/patient/:id/records", async (req, res) => {
 
 
 // get patient dashboard summary
-patientsRouter.get("/api/patient/:id/dashboard", async (req, res) => {
+patientPortalRouter.get("/api/patient/:id/dashboard", async (req, res) => {
     const patientId = Number(req.params.id);
 
     const appointments = await pool.query(

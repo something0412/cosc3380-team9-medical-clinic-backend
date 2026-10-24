@@ -117,7 +117,7 @@ describe("creating employees", () => {
     assert.equal(nurse.nurse.nursingLevel, "NP");
     assert.equal(nurse.hasLogin, false);
 
-    // doctor details sent for a non-doctor role are ignored
+    // doctor details sent for a role that isn't a doctor are ignored
     const adminUser = await createEmployee(receptionist({ employeeTypeId: 1, doctor: doctorDetails() }));
     assert.equal(adminUser.doctor, null);
     assert.equal(adminUser.nurse, null);
@@ -155,9 +155,9 @@ describe("creating employees", () => {
   });
 
   test("a failure partway through rolls back the whole employee", async (t) => {
-    // the app logs the forced database error; keep the test output clean
+    // the app logs the forced database error, so keep the test output clean
     t.mock.method(console, "error", () => {});
-    // test-only trigger makes the nurse insert fail after the employee and login rows exist
+    // a trigger made just for this test makes the nurse insert fail after the employee and login rows exist
     await app.db.query(`
       CREATE FUNCTION fail_nurse_insert() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN RAISE EXCEPTION 'forced test failure'; END $$;
