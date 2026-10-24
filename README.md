@@ -52,7 +52,7 @@ src/
   scripts/              # setStaffPassword.ts resets a staff password
   routes/
     auth.ts             # login, signup, logout, and the current user
-    public.ts           # public doctors, offices, and specialties
+    public.ts           # public doctors, offices, specialties, and open times
     booking.ts          # availability, booking, and cancellation
     health.ts           # GET /api/health, no database access
     template.ts         # GET /api/template, proves the frontend can reach the backend

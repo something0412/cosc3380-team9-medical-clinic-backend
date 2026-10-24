@@ -8,10 +8,13 @@ import { HttpError } from "../middleware/errorHandler.js";
 export const bookingRouter = Router();
 
 const id = z.coerce.number().int().positive();
-const date = z.iso.date("Date must look like 2026-11-10");
+const DATE_MESSAGE = "Date must look like 2026-11-10";
+
+// shared with the public search. PostgreSQL has no year 0, so those dates stop here instead of failing in SQL
+export const bookingDate = z.iso.date(DATE_MESSAGE).refine((value) => !value.startsWith("0000"), DATE_MESSAGE);
 
 const availabilityQuery = z.object({
-  date,
+  date: bookingDate,
   days: z.coerce.number().int().min(1).max(14, "Search up to 14 days at a time").default(1),
   doctorId: id.optional(),
   specialtyId: id.optional(),
@@ -23,7 +26,7 @@ const bookingBody = z.object({
   patientId: z.number().int().positive().optional(),
   doctorId: z.number().int().positive(),
   specialtyId: z.number().int().positive(),
-  date,
+  date: bookingDate,
   timeSlotId: z.number().int().positive(),
   referralId: z.number().int().positive().nullable().optional(),
 });

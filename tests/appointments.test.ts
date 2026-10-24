@@ -270,6 +270,214 @@ describe("availability", () => {
   });
 });
 
+describe("public availability", () => {
+  const PUBLIC_FIELDS = [
+    "date", "doctorId", "doctorName", "endTime", "officeId", "officeName", "requiresReferral", "specialty", "specialtyId", "startTime", "timeSlotId",
+  ];
+  const BAD_IDS = ["abc", "0", "-1", "1.5", "99999999999"];
+  const family = ids.familyMedicine;
+
+  function publicSearch(client: TestClient, params: Record<string, string | number>) {
+    const query = new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]));
+    return client.get(`/api/public/availability?${query}`);
+  }
+
+  async function publicSlots(params: Record<string, string | number>) {
+    const res = await publicSearch(anonymous, params);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    return res.body.map((slot: { timeSlotId: number }) => slot.timeSlotId) as number[];
+  }
+
+  const doctorsIn = (slots: { doctorId: number }[]) => [...new Set(slots.map((s) => s.doctorId))].sort((a, b) => a - b);
+
+  test("visitors see open times without signing in", async () => {
+    const res = await publicSearch(anonymous, { specialtyId: family, date: day(7), doctorId: DOCTOR.fay });
+    assert.equal(res.status, 200);
+    assert.deepEqual(res.body[0], {
+      date: day(7),
+      doctorId: DOCTOR.fay,
+      doctorName: "Fay Family",
+      officeId: ids.mainOffice,
+      officeName: "Main Street Clinic",
+      specialtyId: family,
+      specialty: "Family Medicine",
+      requiresReferral: false,
+      timeSlotId: SLOT.m0800,
+      startTime: "08:00",
+      endTime: "08:30",
+    });
+    assert.deepEqual(
+      res.body.map((s: { timeSlotId: number }) => s.timeSlotId),
+      [SLOT.m0800, SLOT.m0830, SLOT.m0900, SLOT.m1000, SLOT.m1100]
+    );
+  });
+
+  test("matches the signed in search apart from referrals", async () => {
+    // a receptionist search without a patient uses the same rules, over two weeks of schedules and bookings
+    for (const [client, officeId] of [[mia, ids.mainOffice], [rita, ids.westsideOffice]] as const) {
+      const search = { specialtyId: family, officeId, date: day(7), days: 14 };
+      const signedIn = await availability(client, search);
+      assert.equal(signedIn.status, 200);
+      const visitor = await publicSearch(anonymous, search);
+      assert.equal(visitor.status, 200);
+      assert.ok(visitor.body.length > 0);
+      assert.deepEqual(visitor.body, signedIn.body.map(({ referralId, ...slot }: { referralId: number | null }) => slot));
+    }
+  });
+
+  test("specialty and date are required and checked", async () => {
+    const cases: [Record<string, string | number>, string][] = [
+      [{ date: day(7) }, "ID must be a positive whole number"],
+      [{ specialtyId: family }, "Date must look like 2026-11-10"],
+      [{ specialtyId: family, date: "next tuesday" }, "Date must look like 2026-11-10"],
+      [{ specialtyId: family, date: "2026-02-30" }, "Date must look like 2026-11-10"],
+    ];
+    for (const [params, message] of cases) {
+      const res = await publicSearch(anonymous, params);
+      assert.equal(res.status, 400, JSON.stringify(params));
+      assert.equal(res.body.error, message);
+    }
+  });
+
+  test("year 0 dates are turned away before they reach the database", async () => {
+    for (const date of ["0000-01-01", "0000-02-29", "0000-12-31"]) {
+      const responses = [
+        await publicSearch(anonymous, { specialtyId: family, date }),
+        await availability(pat, { specialtyId: family, date }),
+        await book(pat, { doctorId: DOCTOR.fay, specialtyId: family, date, timeSlotId: SLOT.m0800 }),
+      ];
+      for (const res of responses) {
+        assert.equal(res.status, 400, `${date}: ${JSON.stringify(res.body)}`);
+        assert.equal(res.body.error, "Date must look like 2026-11-10");
+      }
+    }
+
+    // the first and last dates zod allows still reach the scheduling rules
+    for (const date of ["0001-01-01", "9999-12-31"]) {
+      assert.equal((await publicSearch(anonymous, { specialtyId: family, date, days: 14 })).status, 200, date);
+      assert.equal((await availability(pat, { specialtyId: family, date, days: 14 })).status, 200, date);
+    }
+    assert.deepEqual(await publicSlots({ specialtyId: family, date: "0001-01-01", days: 14 }), []);
+    const past = await book(pat, { doctorId: DOCTOR.fay, specialtyId: family, date: "0001-01-01", timeSlotId: SLOT.m0800 });
+    assert.equal(past.status, 409);
+    assert.equal(past.body.error, "Appointments must be booked for a future time");
+  });
+
+  test("checks the day range and every ID", async () => {
+    const dates = async (days?: number) => {
+      const res = await publicSearch(anonymous, { specialtyId: family, date: day(7), doctorId: DOCTOR.fay, ...(days ? { days } : {}) });
+      assert.equal(res.status, 200);
+      return [...new Set(res.body.map((s: { date: string }) => s.date))];
+    };
+    assert.deepEqual(await dates(), [day(7)]);
+    assert.deepEqual(await dates(14), Array.from({ length: 14 }, (_, i) => day(7 + i)));
+
+    for (const days of ["0", "15", "-1", "1.5", "abc"]) {
+      assert.equal((await publicSearch(anonymous, { specialtyId: family, date: day(7), days })).status, 400, days);
+    }
+    for (const name of ["specialtyId", "doctorId", "officeId"]) {
+      for (const bad of BAD_IDS) {
+        const res = await publicSearch(anonymous, { specialtyId: family, date: day(7), [name]: bad });
+        assert.equal(res.status, 400, `${name}=${bad}`);
+        assert.equal(res.body.error, "ID must be a positive whole number");
+      }
+    }
+  });
+
+  test("doctor and office filters narrow the results", async () => {
+    const doctors = async (params: Record<string, number>) => {
+      const res = await publicSearch(anonymous, { date: day(7), ...params });
+      assert.equal(res.status, 200);
+      return doctorsIn(res.body);
+    };
+    assert.deepEqual(await doctors({ specialtyId: family }), [DOCTOR.fay, DOCTOR.fred, DOCTOR.wendy, DOCTOR.nora]);
+    assert.deepEqual(await doctors({ specialtyId: ids.cardiology }), [DOCTOR.dan, DOCTOR.carl]);
+    assert.deepEqual(await doctors({ specialtyId: family, officeId: ids.westsideOffice }), [DOCTOR.fred]);
+    assert.deepEqual(await doctors({ specialtyId: family, officeId: ids.mainOffice }), [DOCTOR.fay, DOCTOR.wendy, DOCTOR.nora]);
+    assert.deepEqual(await doctors({ specialtyId: family, doctorId: DOCTOR.fred }), [DOCTOR.fred]);
+    assert.deepEqual(await doctors({ specialtyId: family, doctorId: DOCTOR.fred, officeId: ids.mainOffice }), []);
+    assert.deepEqual(await doctors({ specialtyId: family, doctorId: DOCTOR.carl }), []);
+  });
+
+  test("leaves out inactive doctors, offices, specialties, assignments, schedules, shifts, and slots", async () => {
+    for (const doctorId of [DOCTOR.ivan, DOCTOR.olga, DOCTOR.una, DOCTOR.sam, DOCTOR.cal]) {
+      assert.deepEqual(await publicSlots({ specialtyId: family, date: day(7), doctorId }), [], `doctor ${doctorId}`);
+    }
+    assert.deepEqual(await publicSlots({ specialtyId: ids.retiredSpecialty, date: day(7) }), []);
+    assert.deepEqual(await publicSlots({ specialtyId: family, date: day(7), officeId: ids.closedOffice }), []);
+    assert.equal((await publicSlots({ specialtyId: family, date: day(7), doctorId: DOCTOR.fay })).includes(SLOT.m0930Inactive), false);
+  });
+
+  test("leaves out past dates and times that already started", async () => {
+    assert.deepEqual(await publicSlots({ specialtyId: family, date: day(-1), doctorId: DOCTOR.fay }), []);
+    assert.deepEqual(await publicSlots({ specialtyId: family, date: today, doctorId: DOCTOR.nora }), []);
+    assert.deepEqual(await publicSlots({ specialtyId: family, date: day(7), doctorId: DOCTOR.nora }), [SLOT.night0000]);
+
+    const fromYesterday = await publicSearch(anonymous, { specialtyId: family, date: day(-1), days: 3 });
+    assert.ok(fromYesterday.body.length > 0);
+    assert.ok(fromYesterday.body.every((s: { date: string }) => s.date >= today));
+  });
+
+  test("booked times are left out and cancelled ones come back", async () => {
+    const search = { specialtyId: family, date: day(29), doctorId: DOCTOR.fred };
+    const appointmentId = await booked(olive, { doctorId: DOCTOR.fred, specialtyId: family, date: day(29), timeSlotId: SLOT.f0900 });
+    // a Morning slot visit still blocks Fred's Full Day slot that overlaps it
+    await insertAppointment({ patientId: PATIENT.olive, doctorId: DOCTOR.fred, officeId: ids.westsideOffice, specialtyId: family, date: day(29), timeSlotId: SLOT.m1000 });
+    assert.deepEqual(await publicSlots(search), [SLOT.f0800, SLOT.f0830, SLOT.f0930, SLOT.f1300]);
+
+    assert.equal((await olive.patch(`/api/appointments/${appointmentId}/cancel`)).status, 200);
+    assert.deepEqual(await publicSlots(search), [SLOT.f0800, SLOT.f0830, SLOT.f0900, SLOT.f0930, SLOT.f1300]);
+  });
+
+  test("a patient in the query or the session doesn't change the results", async () => {
+    await booked(pat, { doctorId: DOCTOR.fay, specialtyId: family, date: day(30), timeSlotId: SLOT.m0900 });
+    const search = { specialtyId: family, date: day(30), doctorId: DOCTOR.fred };
+    const everyTime = [SLOT.f0800, SLOT.f0830, SLOT.f0900, SLOT.f0930, SLOT.f1015, SLOT.f1300];
+
+    // Pat's own search still hides the time that overlaps Pat's visit with Fay
+    assert.deepEqual(await openSlots(pat, search), [SLOT.f0800, SLOT.f0830, SLOT.f0930, SLOT.f1015, SLOT.f1300]);
+    assert.deepEqual(await publicSlots(search), everyTime);
+    assert.deepEqual(await publicSlots({ ...search, patientId: PATIENT.pat, referralId: REFERRAL.oliveApproved }), everyTime);
+
+    const signedIn = await publicSearch(pat, { ...search, patientId: PATIENT.pat });
+    assert.equal(signedIn.status, 200);
+    assert.deepEqual(signedIn.body.map((s: { timeSlotId: number }) => s.timeSlotId), everyTime);
+  });
+
+  test("responses have only public fields and nothing about patients or referrals", async () => {
+    // Olive has an approved referral to Dan, which her own search shows
+    const forOlive = await availability(olive, { specialtyId: ids.cardiology, date: day(7), doctorId: DOCTOR.dan });
+    assert.ok(forOlive.body.every((s: { referralId: number | null }) => s.referralId === REFERRAL.oliveApproved));
+
+    const bodies = [];
+    for (const [client, params] of [
+      [anonymous, { specialtyId: ids.cardiology, date: day(7), days: 14 }],
+      [olive, { specialtyId: ids.cardiology, date: day(7), doctorId: DOCTOR.dan, patientId: PATIENT.olive, referralId: REFERRAL.oliveApproved }],
+      [pat, { specialtyId: family, date: day(7), days: 14, patientId: PATIENT.pat }],
+    ] as const) {
+      const res = await publicSearch(client, params);
+      assert.equal(res.status, 200);
+      assert.ok(res.body.length > 0);
+      for (const slot of res.body) assert.deepEqual(Object.keys(slot).sort(), PUBLIC_FIELDS);
+      bodies.push(res.body);
+    }
+    assert.ok(bodies[1].every((s: { requiresReferral: boolean }) => s.requiresReferral));
+    assert.doesNotMatch(JSON.stringify(bodies), /referral_?id|patient|busy|started|olive|pat@|713-555-|1990-01-01|1995-02-02|password/i);
+  });
+
+  test("searching public times doesn't open the signed in booking routes", async () => {
+    assert.equal((await publicSearch(anonymous, { specialtyId: family, date: day(31) })).status, 200);
+    assert.equal((await availability(anonymous, { date: day(31) })).status, 401);
+    assert.equal((await book(anonymous, { doctorId: DOCTOR.fay, specialtyId: family, date: day(31), timeSlotId: SLOT.m0800 })).status, 401);
+
+    // employees can look at public times too, but still can't book
+    assert.equal((await publicSearch(doctor, { specialtyId: family, date: day(31) })).status, 200);
+    const res = await book(doctor, { patientId: PATIENT.olive, doctorId: DOCTOR.fay, specialtyId: family, date: day(31), timeSlotId: SLOT.m0800 });
+    assert.equal(res.status, 403);
+    assert.equal(await activeCount(DOCTOR.fay, day(31)), 0);
+  });
+});
+
 describe("booking", () => {
   test("a patient books a Web appointment for their own account", async () => {
     const res = await book(pat, {
