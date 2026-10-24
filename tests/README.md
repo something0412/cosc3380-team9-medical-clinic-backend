@@ -19,6 +19,7 @@ Tests must never run against the shared Supabase database. They only use `TEST_D
 - `appointmentLists.test.ts` covers the receptionist, nurse, and doctor appointment lists and who can see each one.
 - `referrals.test.ts` covers creating, approving, denying, and listing referrals, decisions at the same time, and booking with referrals.
 - `billing.test.ts` covers creating invoices, recording payments, balances in every billing view, requests at the same time, rollback, Admin only access, and migration 009.
+- `doctorClinical.test.ts` covers which patients a doctor can see, charts, the dashboard, visit summaries, diagnoses, prescriptions, lab orders, and requests at the same time.
 - `triggers.test.ts` covers the appointment history, employee audit, and appointment conflict triggers, plus row level security on the audit tables.
 - `profiles.test.ts` covers patient and staff profile updates, emergency contacts, insurance, certificates, password rules, ownership checks, and registration of every patient and staff route.
 - `sessions.test.ts` covers ending sessions for deactivated, disabled, and deleted accounts, and checks that role, staff type, and office changes apply on the next request.
