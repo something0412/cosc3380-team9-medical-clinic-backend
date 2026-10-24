@@ -168,7 +168,7 @@ describe("errors through the app", () => {
       nurse: null,
     });
     assert.equal(res.status, 400);
-    assert.deepEqual(res.body, { error: "Some of the submitted values refer to records that don't exist" });
+    assert.deepEqual(res.body, { error: "Selected office does not exist" });
     assert.equal((await app.db.query(`SELECT count(*)::int AS n FROM employee WHERE email = 'owen.office@test.org'`)).rows[0].n, 0);
   });
 

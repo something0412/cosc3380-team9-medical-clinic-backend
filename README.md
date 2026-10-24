@@ -47,6 +47,7 @@ src/
   services/referrals.ts referral rules for doctors and the patient portal
   services/billing.ts   invoices, payments, and the balance every billing view uses
   services/clinical.ts  charts, visit records, allergies, and home medications for doctors and nurses
+  services/employees.ts employee records, roles, status, and logins for both admin staff pages
   middleware/           signed in user check, error handler, and role checks
   lib/                  database pool, transactions, password hashing, and clinic time
 database/               schema snapshot and migrations
@@ -66,6 +67,7 @@ Most route files write their full `/api/...` paths and are mounted in `app.ts`. 
 - Creating, approving, denying, and listing referrals go through `src/services/referrals.ts`. Booking still decides whether a referral can be used for an appointment.
 - Invoices, payments, and balances go through `src/services/billing.ts`. Only admins create invoices or record payments.
 - Patient charts, visit records, allergies, and home medications go through `src/services/clinical.ts` for both doctors and nurses. A doctor only sees the charts of patients they're assigned to or have a booked or finished visit with. A nurse only sees patients with a visit at their office today.
+- Creating, editing, activating, and deactivating employees go through `src/services/employees.ts`, so the Employees and Staff pages follow the same rules. A doctor with upcoming appointments can't be deactivated.
 - Patient sign up, front desk registration, portal logins, status, contact info, emergency contacts, and insurance go through `src/services/patients.ts`.
 
 ## Database

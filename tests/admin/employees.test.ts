@@ -117,8 +117,16 @@ describe("creating employees", () => {
     assert.equal(nurse.nurse.nursingLevel, "NP");
     assert.equal(nurse.hasLogin, false);
 
-    // doctor details sent for a role that isn't a doctor are ignored
-    const adminUser = await createEmployee(receptionist({ employeeTypeId: 1, doctor: doctorDetails() }));
+    // doctor or nurse details sent for another role are refused instead of being dropped
+    const employeesBefore = await count("employee");
+    const mismatched = [
+      await admin.post("/api/admin/employees", receptionist({ employeeTypeId: 1, doctor: doctorDetails() })),
+      await admin.post("/api/admin/employees", receptionist({ employeeTypeId: 1, nurse: { licenseNumber: "RN-NEW2", licenseState: "TX", licenseExpiration: "2029-06-01", nursingLevel: "RN" } })),
+    ];
+    assert.deepEqual(mismatched.map((r) => [r.status, r.body.error]), [[400, "Only doctors can have doctor details"], [400, "Only nurses can have nurse details"]]);
+    assert.equal(await count("employee"), employeesBefore);
+
+    const adminUser = await createEmployee(receptionist({ employeeTypeId: 1 }));
     assert.equal(adminUser.doctor, null);
     assert.equal(adminUser.nurse, null);
   });
