@@ -796,6 +796,35 @@ CREATE TABLE public.nurse (
 
 
 --
+-- Name: nursing_note; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.nursing_note (
+    nursing_note_id integer NOT NULL,
+    appointment_id integer NOT NULL,
+    recorded_by_employee_id integer NOT NULL,
+    note text NOT NULL,
+    recorded_at timestamp without time zone NOT NULL,
+    updated_at timestamp without time zone,
+    CONSTRAINT nursing_note_note_check CHECK ((btrim(note) <> ''::text))
+);
+
+
+--
+-- Name: nursing_note_nursing_note_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.nursing_note ALTER COLUMN nursing_note_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.nursing_note_nursing_note_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: office; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1607,6 +1636,14 @@ ALTER TABLE ONLY public.nurse
 
 
 --
+-- Name: nursing_note nursing_note_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.nursing_note
+    ADD CONSTRAINT nursing_note_pkey PRIMARY KEY (nursing_note_id);
+
+
+--
 -- Name: office office_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1826,6 +1863,13 @@ CREATE INDEX idx_appointment_history_appointment ON public.appointment_history U
 --
 
 CREATE INDEX idx_employee_audit_employee ON public.employee_audit USING btree (employee_id, changed_at);
+
+
+--
+-- Name: idx_nursing_note_appointment; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_nursing_note_appointment ON public.nursing_note USING btree (appointment_id);
 
 
 --
@@ -2157,6 +2201,22 @@ ALTER TABLE ONLY public.lab_order
 
 ALTER TABLE ONLY public.nurse
     ADD CONSTRAINT nurse_employee_id_fkey FOREIGN KEY (employee_id) REFERENCES public.employee(employee_id) ON DELETE CASCADE;
+
+
+--
+-- Name: nursing_note nursing_note_appointment_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.nursing_note
+    ADD CONSTRAINT nursing_note_appointment_id_fkey FOREIGN KEY (appointment_id) REFERENCES public.appointment(appointment_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: nursing_note nursing_note_recorded_by_employee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.nursing_note
+    ADD CONSTRAINT nursing_note_recorded_by_employee_id_fkey FOREIGN KEY (recorded_by_employee_id) REFERENCES public.employee(employee_id) ON DELETE RESTRICT;
 
 
 --
@@ -2504,6 +2564,12 @@ ALTER TABLE public.medication ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.nurse ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: nursing_note; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.nursing_note ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: office; Type: ROW SECURITY; Schema: public; Owner: -

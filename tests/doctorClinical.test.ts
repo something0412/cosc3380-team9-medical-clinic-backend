@@ -21,7 +21,7 @@ import { ids, resetDatabase } from "./helpers/testDb.js";
 const PATIENT_LIST_KEYS = ["patientId", "firstName", "lastName", "dob", "assignedToMe", "lastVisit", "nextVisit"];
 const CHART_KEYS = [
   "patientId", "firstName", "lastName", "dob", "gender", "phone", "isActive", "assignedToMe",
-  "allergies", "insurance", "missingForms", "homeMedications", "vitals", "visits", "labOrders", "prescriptions",
+  "allergies", "insurance", "missingForms", "homeMedications", "vitals", "nursingNotes", "visits", "labOrders", "prescriptions",
 ];
 
 let app: Awaited<ReturnType<typeof startTestApp>>;

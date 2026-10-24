@@ -1,99 +1,110 @@
 import { Router } from "express";
+import type { Request } from "express";
+import type { Pool, PoolClient } from "pg";
+import { z } from "zod";
+import { CLINIC_NOW } from "../../lib/clinicTime.js";
 import { pool } from "../../lib/db.js";
+import { withTransaction } from "../../lib/transaction.js";
+import { HttpError } from "../../middleware/errorHandler.js";
+import { LAB_ORDER_COLUMNS, LAB_ORDER_JOINS, lockActiveEmployee } from "../../services/clinical.js";
 
 export const labOrdersRouter = Router();
 
-// get lab orders from every doctor (status tab and patient search)
-labOrdersRouter.get("/api/lab/orders", async (req, res) => {
-  const status = String(req.query.status ?? "Ordered");
-  const search = String(req.query.search ?? "").trim();
+const id = z.coerce.number("Choose a lab order").int("Choose a lab order").positive("Choose a lab order");
+const listQuery = z.object({
+  status: z.enum(["all", "open", "Ordered", "InProgress", "Completed", "Cancelled"], "Status must be all, open, Ordered, InProgress, Completed or Cancelled").default("Ordered"),
+  search: z.string().trim().max(100).default(""),
+});
+const resultBody = z.object({
+  resultNotes: z.string("Enter the result").trim().min(1, "Enter the result").max(10000, "Keep the result under 10000 characters"),
+});
 
-  // get the lab orders for the chosen tab, matching the searched patient name
+// the lab technician is whoever is signed in, never an ID from the request
+function me(req: Request) {
+  if (req.user?.role !== "lab") throw new HttpError(401, "Login required");
+  return req.user.employeeId;
+}
+
+// the lab sees the order and the patient's name and birth date to match the sample, not the chart
+const LAB_COLUMNS = `${LAB_ORDER_COLUMNS}, to_char(p.dob, 'YYYY-MM-DD') AS dob`;
+
+const getLabOrder = async (db: Pool | PoolClient, labOrderId: number) =>
+  (await db.query(`SELECT ${LAB_COLUMNS} FROM lab_order l ${LAB_ORDER_JOINS} WHERE l.lab_order_id = $1`, [labOrderId])).rows[0] ?? null;
+
+// says why a status change didn't match, from the order as it is now
+async function refuse(db: PoolClient, labOrderId: number, rule: string): Promise<never> {
+  const current = await db.query(`SELECT status FROM lab_order WHERE lab_order_id = $1`, [labOrderId]);
+  if (!current.rowCount) throw new HttpError(404, "Lab order not found");
+  throw new HttpError(409, `${rule} This one is ${current.rows[0].status}.`);
+}
+
+// get lab orders from every doctor (status tab and patient search)
+// the clinic has one lab for every office, so orders aren't split by office
+labOrdersRouter.get("/api/lab/orders", async (req, res) => {
+  me(req);
+  const { status, search } = listQuery.parse(req.query);
+
   // waiting ones oldest first, finished ones newest result first
   const result = await pool.query(
     `
-    SELECT
-      l.lab_order_id AS "labOrderId",
-      p.patient_id AS "patientId",
-      p.first_name || ' ' || p.last_name AS "patientName",
-      to_char(p.dob, 'YYYY-MM-DD') AS dob,
-      t.name AS "testName",
-      d.first_name || ' ' || d.last_name AS "orderedBy",
-      to_char(l.order_date, 'YYYY-MM-DD') AS "orderDate",
-      l.status,
-      l.result_notes AS "resultNotes",
-      lt.first_name || ' ' || lt.last_name AS "performedBy",
-      to_char(l.result_date, 'YYYY-MM-DD HH24:MI') AS "resultDate"
+    SELECT ${LAB_COLUMNS}
     FROM lab_order l
-    JOIN patient p ON p.patient_id = l.patient_id
-    JOIN lab_test_type t ON t.lab_test_type_id = l.lab_test_type_id
-    JOIN employee d ON d.employee_id = l.ordered_by_employee_id
-    LEFT JOIN employee lt ON lt.employee_id = l.performed_by_employee_id
-    WHERE ($1 = 'all' OR l.status = $1)
-      AND (p.first_name || ' ' || p.last_name) ILIKE '%' || $2 || '%'
+    ${LAB_ORDER_JOINS}
+    WHERE ($1 = 'all' OR ($1 = 'open' AND l.status IN ('Ordered', 'InProgress')) OR l.status = $1)
+      AND ($2 = '' OR p.first_name || ' ' || p.last_name ILIKE '%' || $2 || '%' ESCAPE '\\')
     ORDER BY
       CASE WHEN l.status IN ('Ordered', 'InProgress') THEN l.order_date END,
       l.result_date DESC NULLS LAST,
       l.lab_order_id DESC
     `,
-    [status, search]
+    [status, search.replace(/[\\%_]/g, (character) => `\\${character}`)]
   );
 
   res.json(result.rows);
 });
 
+// get one lab order
+labOrdersRouter.get("/api/lab/orders/:id", async (req, res) => {
+  me(req);
+  const order = await getLabOrder(pool, id.parse(req.params.id));
+  if (!order) throw new HttpError(404, "Lab order not found");
+  res.json(order);
+});
+
 // start an order (sample collected)
 labOrdersRouter.patch("/api/lab/orders/:id/start", async (req, res) => {
-  const labOrderId = Number(req.params.id);
+  const labTechId = me(req);
+  const labOrderId = id.parse(req.params.id);
 
-  // move a waiting order to in progress
-  const result = await pool.query(
-    `
-    UPDATE lab_order
-    SET status = 'InProgress'
-    WHERE lab_order_id = $1 AND status = 'Ordered'
-    RETURNING lab_order_id AS "labOrderId", status
-    `,
-    [labOrderId]
-  );
-
-  if (result.rowCount === 0) {
-    res.status(400).json({ error: "Only waiting orders can be started" });
-    return;
-  }
-
-  res.json(result.rows[0]);
+  const order = await withTransaction(async (client) => {
+    await lockActiveEmployee(client, labTechId);
+    // one conditional update, so a doctor cancelling or another technician starting it can't both win
+    const started = await client.query(`UPDATE lab_order SET status = 'InProgress' WHERE lab_order_id = $1 AND status = 'Ordered'`, [labOrderId]);
+    if (!started.rowCount) await refuse(client, labOrderId, "Only waiting orders can be started.");
+    return getLabOrder(client, labOrderId);
+  });
+  res.json(order);
 });
 
 // enter the result (the order is then completed and can't be changed)
 labOrdersRouter.patch("/api/lab/orders/:id/result", async (req, res) => {
-  const labTechId = req.session.employeeId;
-  const labOrderId = Number(req.params.id);
-  const resultNotes = String(req.body.resultNotes ?? "").trim();
+  const labTechId = me(req);
+  const labOrderId = id.parse(req.params.id);
+  const { resultNotes } = resultBody.parse(req.body);
 
-  if (!resultNotes) {
-    res.status(400).json({ error: "Enter the result" });
-    return;
-  }
-
-  // save the result, who entered it and when (Houston time), and mark the order completed
-  const result = await pool.query(
-    `
-    UPDATE lab_order
-    SET status = 'Completed',
-        result_notes = $1,
-        performed_by_employee_id = $2,
-        result_date = now() AT TIME ZONE 'America/Chicago'
-    WHERE lab_order_id = $3 AND status IN ('Ordered', 'InProgress')
-    RETURNING lab_order_id AS "labOrderId", status
-    `,
-    [resultNotes, labTechId, labOrderId]
-  );
-
-  if (result.rowCount === 0) {
-    res.status(400).json({ error: "Only waiting or in-progress orders can get a result" });
-    return;
-  }
-
-  res.json(result.rows[0]);
+  const order = await withTransaction(async (client) => {
+    await lockActiveEmployee(client, labTechId);
+    // only an order in progress matches, so a second result can't overwrite the first
+    const completed = await client.query(
+      `
+      UPDATE lab_order
+      SET status = 'Completed', result_notes = $2, performed_by_employee_id = $3, result_date = ${CLINIC_NOW}
+      WHERE lab_order_id = $1 AND status = 'InProgress'
+      `,
+      [labOrderId, resultNotes, labTechId]
+    );
+    if (!completed.rowCount) await refuse(client, labOrderId, "Only started orders can get a result.");
+    return getLabOrder(client, labOrderId);
+  });
+  res.json(order);
 });
