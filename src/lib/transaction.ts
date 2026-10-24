@@ -1,7 +1,7 @@
 import type { PoolClient } from "pg";
 import { pool } from "./db.js";
 
-// run all steps on one client; roll back if any step fails
+// run all steps on one client and roll back if any step fails
 export async function withTransaction<T>(work: (client: PoolClient) => Promise<T>) {
   const client = await pool.connect();
   try {
