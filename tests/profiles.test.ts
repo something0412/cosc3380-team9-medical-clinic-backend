@@ -300,8 +300,8 @@ describe("staff profile", () => {
 });
 
 describe("employee patient management", () => {
-  test("employees list and register patients, patients and visitors can't", async () => {
-    const list = await nurse.get("/api/patients");
+  test("receptionists list and register patients, other staff, patients and visitors can't", async () => {
+    const list = await receptionist.get("/api/patients");
     assert.equal(list.status, 200);
     assert.ok(list.body.some((p: { patientId: number }) => p.patientId === OLIVE));
 
@@ -311,6 +311,10 @@ describe("employee patient management", () => {
     assert.equal(created.body.isActive, true);
     assert.equal((await receptionist.post("/api/patients", { firstName: "No", lastName: "Phone", dob: "1988-08-08" })).status, 400);
 
+    for (const employee of [nurse, doctor]) {
+      assert.equal((await employee.get("/api/patients")).status, 403);
+      assert.equal((await employee.post("/api/patients", { firstName: "A", lastName: "B", dob: "1990-01-01", phone: "1" })).status, 403);
+    }
     assert.equal((await pat.get("/api/patients")).status, 401);
     assert.equal((await anonymous.post("/api/patients", { firstName: "A", lastName: "B", dob: "1990-01-01", phone: "1" })).status, 401);
   });

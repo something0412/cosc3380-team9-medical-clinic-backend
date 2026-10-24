@@ -228,7 +228,15 @@ describe("staff identity", () => {
 describe("sign in, sign out, and public access", () => {
   test("login, logout, and session restoration still work", async () => {
     const admin = await app.loginStaff(ids.admin);
-    assert.deepEqual((await admin.get("/api/auth/me")).body, { role: "admin", id: ids.admin, firstName: "Ada", lastName: "Admin" });
+    assert.deepEqual((await admin.get("/api/auth/me")).body, {
+      role: "admin",
+      id: ids.admin,
+      firstName: "Ada",
+      lastName: "Admin",
+      employeeType: "Administrator",
+      staffType: "admin",
+      officeId: ids.mainOffice,
+    });
     assert.equal((await admin.get("/api/admin/offices")).status, 200);
     assert.equal((await admin.post("/api/auth/logout")).status, 204);
     assert.equal((await admin.get("/api/auth/me")).status, 401);
