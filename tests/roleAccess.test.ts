@@ -61,7 +61,7 @@ const BOOKING = { anonymous: 401, patient: 200, doctor: 403, nurse: 403, recepti
 const OWN_APPOINTMENT = { anonymous: 401, patient: 200, doctor: 403, nurse: 403, receptionist: 403, admin: 403, lab: 403 };
 
 const fixed = (path: string) => () => path;
-const PATIENT_SECTIONS = ["profile", "appointments", "forms", "billing", "records", "dashboard"];
+const PATIENT_SECTIONS = ["profile", "appointments", "forms", "billing", "records", "dashboard", "referrals"];
 
 // every GET endpoint in the app
 const ENDPOINTS: Endpoint[] = [
@@ -87,6 +87,8 @@ const ENDPOINTS: Endpoint[] = [
   { label: "GET /api/receptionist/appointments", path: fixed("/api/receptionist/appointments"), expect: RECEPTIONIST_ONLY },
   { label: "GET /api/nurse/appointments", path: fixed("/api/nurse/appointments"), expect: NURSE_ONLY },
   { label: "GET /api/doctor/appointments", path: fixed("/api/doctor/appointments?view=all"), expect: DOCTOR_ONLY },
+  { label: "GET /api/doctor/referrals", path: fixed("/api/doctor/referrals"), expect: DOCTOR_ONLY },
+  { label: "GET /api/doctor/specialists", path: fixed("/api/doctor/specialists"), expect: DOCTOR_ONLY },
   { label: "GET /api/availability", path: fixed("/api/availability?date=2030-01-07"), expect: BOOKING },
   { label: "GET /api/appointments/1", path: fixed("/api/appointments/1"), expect: OWN_APPOINTMENT },
   ...PATIENT_SECTIONS.map((section) => ({
