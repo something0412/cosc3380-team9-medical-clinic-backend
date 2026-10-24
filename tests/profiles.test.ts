@@ -53,6 +53,7 @@ const patientRoutes = (id: number) => [
   ["GET", `/api/patient/${id}/billing`],
   ["GET", `/api/patient/${id}/records`],
   ["GET", `/api/patient/${id}/dashboard`],
+  ["GET", `/api/patient/${id}/referrals`],
   ["GET", `/api/patient/${id}/profile`],
   ["PUT", `/api/patient/${id}/profile`],
   ["POST", `/api/patient/${id}/emergency-contacts`],
@@ -73,7 +74,7 @@ const staffRoutes = (id: number) => [
 describe("route registration", () => {
   test("every patient and staff route still answers, with 401 when signed out", async () => {
     const routes = [...patientRoutes(ids.patient), ...staffRoutes(ids.nurse), ["GET", "/api/patients"], ["POST", "/api/patients"]];
-    assert.equal(routes.length, 20);
+    assert.equal(routes.length, 21);
     for (const [method, path] of routes) {
       assert.equal((await send(anonymous, method, path)).status, 401, `${method} ${path}`);
     }

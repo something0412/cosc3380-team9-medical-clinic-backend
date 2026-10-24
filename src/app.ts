@@ -23,6 +23,7 @@ import { labOrdersRouter } from "./routes/lab/labOrders.js";
 import { nurseRouter } from "./routes/nurse/index.js";
 import { patientPortalRouter } from "./routes/patient/portal.js";
 import { patientProfileRouter } from "./routes/patient/profile.js";
+import { patientReferralsRouter } from "./routes/patient/referrals.js";
 import { publicRouter } from "./routes/public.js";
 import { receptionistRouter } from "./routes/receptionist/index.js";
 import { staffPatientsRouter } from "./routes/staff/patients.js";
@@ -129,6 +130,7 @@ app.use(receptionistRouter);
 app.use(staffPatientsRouter);
 app.use(patientPortalRouter);
 app.use(patientProfileRouter);
+app.use(patientReferralsRouter);
 app.use(staffProfileRouter);
 app.use(templateRouter);
 
