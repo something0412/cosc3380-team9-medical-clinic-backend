@@ -1,7 +1,6 @@
 import { Router } from "express";
 import type { Request } from "express";
 import { z } from "zod";
-import { pool } from "../../lib/db.js";
 import { HttpError } from "../../middleware/errorHandler.js";
 import { createReferral, decideReferral, listDoctorReferrals, listSpecialists } from "../../services/referrals.js";
 import { bookingDate } from "../booking.js";
@@ -47,84 +46,4 @@ doctorReferralsRouter.patch("/api/doctor/referrals/:id/status", async (req, res)
   const referralId = id("referral").parse(req.params.id);
   const { status } = decisionBody.parse(req.body);
   res.json(await decideReferral(referralId, doctorId, status));
-});
-
-// get my open time slots on a date
-doctorReferralsRouter.get("/api/doctor/open-slots", async (req, res) => {
-  const doctorId = req.session.employeeId;
-  const date = String(req.query.date ?? "");
-
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    res.status(400).json({ error: "Pick a date" });
-    return;
-  }
-
-  // get the doctor's free appointment times on that date
-  const result = await pool.query(
-    ``,
-    [doctorId, date]
-  );
-
-  res.json(result.rows);
-});
-
-// book an appointment for a referral I approved
-doctorReferralsRouter.post("/api/doctor/referrals/:id/appointment", async (req, res) => {
-  const doctorId = req.session.employeeId;
-  const referralId = Number(req.params.id);
-  const date = String(req.body.date ?? "");
-  const timeSlotId = Number(req.body.timeSlotId);
-
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !timeSlotId) {
-    res.status(400).json({ error: "Date and time are required" });
-    return;
-  }
-
-  // get the approved referral and check the date is before it expires
-  const referral = await pool.query(
-    ``,
-    [referralId, doctorId, date]
-  );
-  if (referral.rowCount === 0) {
-    res.status(400).json({ error: "Pick a date from today until the referral expires" });
-    return;
-  }
-
-  // check the referral doesn't already have an appointment
-  const existing = await pool.query(
-    ``,
-    [referralId]
-  );
-  if (existing.rowCount !== 0) {
-    res.status(400).json({ error: "This referral already has an appointment" });
-    return;
-  }
-
-  // check the doctor works at that time and get the office
-  const workDay = await pool.query(
-    ``,
-    [doctorId, date, timeSlotId]
-  );
-  if (workDay.rowCount === 0) {
-    res.status(400).json({ error: "You aren't scheduled to work at that time" });
-    return;
-  }
-
-  // check nobody already has that time
-  const taken = await pool.query(
-    ``,
-    [doctorId, date, timeSlotId]
-  );
-  if (taken.rowCount !== 0) {
-    res.status(400).json({ error: "That time is already booked" });
-    return;
-  }
-
-  // save the new appointment
-  const result = await pool.query(
-    ``,
-    [referral.rows[0].patient_id, doctorId, workDay.rows[0].office_id, referralId, date, timeSlotId, referral.rows[0].specialty_id]
-  );
-
-  res.status(201).json(result.rows[0]);
 });

@@ -1,5 +1,7 @@
+import type { Pool, PoolClient } from "pg";
 import { CLINIC_TODAY } from "../lib/clinicTime.js";
 import { pool } from "../lib/db.js";
+import { withTransaction } from "../lib/transaction.js";
 import { HttpError } from "../middleware/errorHandler.js";
 
 // a referral is good for 90 days unless the doctor picks another expiration date
@@ -52,8 +54,8 @@ export interface NewReferral {
   expirationDate?: string;
 }
 
-async function getReferral(referralId: number) {
-  const result = await pool.query(`SELECT ${REFERRAL_COLUMNS} FROM referral r ${REFERRAL_JOINS} WHERE r.referral_id = $1`, [referralId]);
+async function getReferral(db: Pool | PoolClient, referralId: number) {
+  const result = await db.query(`SELECT ${REFERRAL_COLUMNS} FROM referral r ${REFERRAL_JOINS} WHERE r.referral_id = $1`, [referralId]);
   return result.rows[0];
 }
 
@@ -114,21 +116,21 @@ const SPECIALIST_PRACTICES = `
 `;
 
 // says why a referral couldn't be created, checking the patient before anything about the specialist
-async function refuseReferral(doctorId: number, input: NewReferral): Promise<never> {
-  const result = await pool.query(
+async function refuseReferral(client: PoolClient, doctorId: number, input: NewReferral): Promise<never> {
+  const result = await client.query(
     `
     SELECT
-      p.is_active AS "patientActive",
+      (SELECT is_active FROM employee WHERE employee_id = $2) AS "referrerActive",
+      (SELECT is_active FROM patient WHERE patient_id = $1) AS "patientActive",
       ${CARES_FOR_PATIENT} AS "caresForPatient",
       ${SPECIALIST_PRACTICES} AS "specialistPractices",
       COALESCE($5::date, ${CLINIC_TODAY} + ${DEFAULT_DAYS}) > ${CLINIC_TODAY} AS "expiresLater"
-    FROM patient p
-    WHERE p.patient_id = $1
     `,
     [input.patientId, doctorId, input.specialistDoctorId, input.specialtyId, input.expirationDate ?? null]
   );
   const row = result.rows[0];
-  if (!row) throw new HttpError(404, "Patient not found");
+  if (!row.referrerActive) throw new HttpError(403, "Your account is no longer active");
+  if (row.patientActive === null) throw new HttpError(404, "Patient not found");
   if (!row.caresForPatient) throw new HttpError(403, "This patient isn't under your care");
   if (!row.patientActive) throw new HttpError(409, "This patient account is inactive");
   if (input.specialistDoctorId === doctorId) throw new HttpError(400, "You can't refer a patient to yourself");
@@ -137,23 +139,35 @@ async function refuseReferral(doctorId: number, input: NewReferral): Promise<nev
   throw new HttpError(409, "Something changed while saving the referral. Try again.");
 }
 
+// waits for any deactivation in progress so the insert sees committed status, patient first like in booking
+async function lockPeople(client: PoolClient, doctorId: number, input: NewReferral) {
+  await client.query(`SELECT 1 FROM patient WHERE patient_id = $1 FOR SHARE`, [input.patientId]);
+  await client.query(`SELECT 1 FROM employee WHERE employee_id = ANY($1::int[]) ORDER BY employee_id FOR SHARE`, [
+    [doctorId, input.specialistDoctorId],
+  ]);
+}
+
 // every rule is in the insert itself, so nothing can change between checking and saving
 export async function createReferral(doctorId: number, input: NewReferral) {
-  const result = await pool.query(
-    `
-    INSERT INTO referral (patient_id, referring_doctor_id, specialist_doctor_id, specialty_id, date_issued, expiration_date, status)
-    SELECT $1, $2, $3, $4, ${CLINIC_TODAY}, COALESCE($5::date, ${CLINIC_TODAY} + ${DEFAULT_DAYS}), 'Pending'
-    WHERE EXISTS (SELECT 1 FROM patient WHERE patient_id = $1 AND is_active)
-      AND (${CARES_FOR_PATIENT})
-      AND $2 <> $3
-      AND ${SPECIALIST_PRACTICES}
-      AND COALESCE($5::date, ${CLINIC_TODAY} + ${DEFAULT_DAYS}) > ${CLINIC_TODAY}
-    RETURNING referral_id AS "referralId"
-    `,
-    [input.patientId, doctorId, input.specialistDoctorId, input.specialtyId, input.expirationDate ?? null]
-  );
-  if (!result.rowCount) await refuseReferral(doctorId, input);
-  return getReferral(result.rows[0].referralId);
+  return withTransaction(async (client) => {
+    await lockPeople(client, doctorId, input);
+    const result = await client.query(
+      `
+      INSERT INTO referral (patient_id, referring_doctor_id, specialist_doctor_id, specialty_id, date_issued, expiration_date, status)
+      SELECT $1, $2, $3, $4, ${CLINIC_TODAY}, COALESCE($5::date, ${CLINIC_TODAY} + ${DEFAULT_DAYS}), 'Pending'
+      WHERE EXISTS (SELECT 1 FROM employee WHERE employee_id = $2 AND is_active)
+        AND EXISTS (SELECT 1 FROM patient WHERE patient_id = $1 AND is_active)
+        AND (${CARES_FOR_PATIENT})
+        AND $2 <> $3
+        AND ${SPECIALIST_PRACTICES}
+        AND COALESCE($5::date, ${CLINIC_TODAY} + ${DEFAULT_DAYS}) > ${CLINIC_TODAY}
+      RETURNING referral_id AS "referralId"
+      `,
+      [input.patientId, doctorId, input.specialistDoctorId, input.specialtyId, input.expirationDate ?? null]
+    );
+    if (!result.rowCount) await refuseReferral(client, doctorId, input);
+    return getReferral(client, result.rows[0].referralId);
+  });
 }
 
 // only the specialist it was sent to answers it, once, before it expires
@@ -166,9 +180,9 @@ export async function decideReferral(referralId: number, doctorId: number, decis
     `,
     [decision, referralId, doctorId]
   );
-  if (result.rowCount) return getReferral(referralId);
+  if (result.rowCount) return getReferral(pool, referralId);
 
-  const current = await getReferral(referralId);
+  const current = await getReferral(pool, referralId);
   // doctors who aren't on the referral don't find out it exists
   if (!current || (current.referringDoctorId !== doctorId && current.specialistDoctorId !== doctorId)) {
     throw new HttpError(404, "Referral not found");

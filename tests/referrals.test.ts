@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync, readdirSync } from "node:fs";
 import { after, before, describe, test } from "node:test";
 import {
   TEST_CLOCK_OPTION,
@@ -76,16 +77,20 @@ function monday(n: number) {
   return dayFrom(today, ((1 - day + 7) % 7 || 7) + 7 * n);
 }
 
-// holds a change to the referral open while a second request waits on it
-async function whileHeld(change: string, referralId: number, send: () => Promise<TestResponse>) {
+// holds a change open in its own transaction while a second request waits on it
+async function whileHeld(change: string, rowId: number, send: () => Promise<TestResponse>) {
   const held = await app.db.connect();
   try {
     await held.query("BEGIN");
-    await held.query(`${change} WHERE referral_id = $1`, [referralId]);
+    await held.query(change, [rowId]);
     const waiting = send();
     await waitForLockWait(app.db);
     await held.query("COMMIT");
     return await waiting;
+  } catch (err) {
+    // a failed case shouldn't leave its transaction open for the next one
+    await held.query("ROLLBACK");
+    throw err;
   } finally {
     held.release();
   }
@@ -299,7 +304,7 @@ describe("decisions at the same time", () => {
 
   test("a decision waiting on another one sees it and doesn't overwrite it", async () => {
     const referralId = await referral(await rayPatient());
-    const res = await whileHeld(`UPDATE referral SET status = 'Denied'`, referralId, () => decide(dan, referralId, "Approved"));
+    const res = await whileHeld(`UPDATE referral SET status = 'Denied' WHERE referral_id = $1`, referralId, () => decide(dan, referralId, "Approved"));
     assert.deepEqual([res.status, res.body.error], [409, "This referral was already denied"]);
     assert.equal(await statusOf(referralId), "Denied");
   });
@@ -424,7 +429,7 @@ describe("booking with referrals", () => {
   test("a booking waiting on an approval in progress uses the approved referral", async () => {
     const patientId = await rayPatient();
     const referralId = await referral(patientId);
-    const res = await whileHeld(`UPDATE referral SET status = 'Approved'`, referralId, () =>
+    const res = await whileHeld(`UPDATE referral SET status = 'Approved' WHERE referral_id = $1`, referralId, () =>
       book(mia, { patientId, date: monday(3), timeSlotId: slots[0], referralId })
     );
     assert.equal(res.status, 201, JSON.stringify(res.body));
@@ -434,7 +439,7 @@ describe("booking with referrals", () => {
   test("a booking waiting on a referral that stops being approved doesn't use it", async () => {
     const patientId = await rayPatient();
     const referralId = await approved(patientId);
-    const res = await whileHeld(`UPDATE referral SET status = 'Denied'`, referralId, () =>
+    const res = await whileHeld(`UPDATE referral SET status = 'Denied' WHERE referral_id = $1`, referralId, () =>
       book(mia, { patientId, date: monday(4), timeSlotId: slots[0], referralId })
     );
     assert.equal(res.status, 409);
@@ -477,5 +482,112 @@ describe("booking with referrals", () => {
     if (booked.status === 201) assert.equal(booked.body.referralId, referralId);
     else assert.equal(booked.status, 409);
     assert.equal(await statusOf(referralId), "Approved");
+  });
+});
+
+describe("deactivation while a referral is being created", () => {
+  let admin: TestClient;
+  let samId: number;
+  const deactivate = (employeeId: number, isActive: boolean) => admin.patch(`/api/admin/employees/${employeeId}/status`, { isActive });
+  const toSam = (patientId: number) => ({ patientId, specialistDoctorId: samId, specialtyId: ids.cardiology });
+  const referralsTo = async (patientId: number, specialistId: number) =>
+    (await app.db.query(`SELECT count(*)::int AS n FROM referral WHERE patient_id = $1 AND specialist_doctor_id = $2`, [patientId, specialistId])).rows[0].n;
+
+  before(async () => {
+    admin = await app.loginStaff(ids.admin);
+    samId = await addDoctor(app.db, "Sam", ids.mainOffice);
+    await app.db.query(`INSERT INTO doctor_specialty (doctor_id, specialty_id) VALUES ($1, $2)`, [samId, ids.cardiology]);
+  });
+
+  test("a specialist deactivated before the referral is refused, and works again once active", async () => {
+    const patientId = await rayPatient();
+    assert.equal((await deactivate(samId, false)).status, 200);
+    const res = await refer(ray, toSam(patientId));
+    assert.deepEqual([res.status, res.body.error], [400, "That specialist doesn't practice this specialty"]);
+    assert.equal(await referralsTo(patientId, samId), 0);
+
+    assert.equal((await deactivate(samId, true)).status, 200);
+    assert.equal((await refer(ray, toSam(patientId))).status, 201);
+  });
+
+  test("a creation waits for a deactivation in progress and then sees it", async () => {
+    const patientId = await rayPatient();
+    try {
+      const res = await whileHeld(`UPDATE employee SET is_active = false WHERE employee_id = $1`, samId, () => refer(ray, toSam(patientId)));
+      assert.deepEqual([res.status, res.body.error], [400, "That specialist doesn't practice this specialty"]);
+      assert.equal(await referralsTo(patientId, samId), 0);
+    } finally {
+      await deactivate(samId, true);
+    }
+  });
+
+  test("a creation that locks first finishes, and the deactivation goes through after it", async () => {
+    const patientId = await rayPatient();
+    const restore = await slowWrites(app.db, "referral", "INSERT");
+    try {
+      const creating = refer(ray, toSam(patientId));
+      // wait until the creation holds its locks and is sleeping in the insert
+      for (let i = 0; i < 100; i++) {
+        const { rows } = await app.db.query(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE wait_event = 'PgSleep'`);
+        if (rows[0].n > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      const deactivating = deactivate(samId, false);
+      await waitForLockWait(app.db);
+      const [created, deactivated] = await Promise.all([creating, deactivating]);
+      assert.deepEqual([created.status, created.body.status, deactivated.status, deactivated.body.isActive], [201, "Pending", 200, false]);
+      assert.equal(await referralsTo(patientId, samId), 1);
+    } finally {
+      await restore();
+      await deactivate(samId, true);
+    }
+  });
+
+  test("the referring doctor or the patient being deactivated at the same time is waited for too", async () => {
+    const rexId = await addDoctor(app.db, "Rex", ids.mainOffice);
+    const rex = await app.loginStaff(rexId);
+    const patientId = await addPatient(app.db, "Remi");
+    await app.db.query(`INSERT INTO patient_doctor (patient_id, doctor_id) VALUES ($1, $2)`, [patientId, rexId]);
+
+    const doctorGone = await whileHeld(`UPDATE employee SET is_active = false WHERE employee_id = $1`, rexId, () => refer(rex, toCardiology(patientId)));
+    assert.deepEqual([doctorGone.status, doctorGone.body.error], [403, "Your account is no longer active"]);
+    await app.db.query(`UPDATE employee SET is_active = true WHERE employee_id = $1`, [rexId]);
+
+    const rexAgain = await app.loginStaff(rexId);
+    const patientGone = await whileHeld(`UPDATE patient SET is_active = false WHERE patient_id = $1`, patientId, () => refer(rexAgain, toCardiology(patientId)));
+    assert.deepEqual([patientGone.status, patientGone.body.error], [409, "This patient account is inactive"]);
+    assert.equal(await referralsTo(patientId, ids.doctor), 0);
+  });
+
+  test("creations, deactivations and bookings at the same time don't deadlock", async () => {
+    const patientId = await rayPatient();
+    const tuesday = dayFrom(monday(0), 1);
+    for (let round = 0; round < 5; round++) {
+      const results = await Promise.all([
+        refer(ray, toSam(patientId)),
+        refer(ray, toCardiology(patientId)),
+        deactivate(samId, false),
+        book(mia, { patientId, doctorId: caraId, date: tuesday, timeSlotId: slots[1] }),
+      ]);
+      const [toSamResult, toDan, deactivated, booked] = results.map((r) => r.status);
+      assert.ok([201, 400].includes(toSamResult), `round ${round} Sam ${toSamResult}`);
+      assert.deepEqual([toDan, deactivated, booked], [201, 200, 409], `round ${round}`);
+      assert.equal((await deactivate(samId, true)).status, 200);
+    }
+  });
+});
+
+describe("removed scaffolds", () => {
+  test("the unused open slots and referral booking routes are gone", async () => {
+    assert.equal((await dan.get(`/api/doctor/open-slots?date=${monday(0)}`)).status, 404);
+    assert.equal((await dan.post("/api/doctor/referrals/1/appointment", { date: monday(0), timeSlotId: slots[0] })).status, 404);
+    assert.equal((await dan.get("/api/doctor/referrals")).status, 200);
+  });
+
+  test("appointments are only created in the booking service", () => {
+    const src = new URL("../src/", import.meta.url);
+    const files = (readdirSync(src, { recursive: true }) as string[]).map((file) => file.replaceAll("\\", "/")).filter((file) => file.endsWith(".ts"));
+    const writers = files.filter((file) => /INSERT INTO appointment\b/i.test(readFileSync(new URL(file, src), "utf8")));
+    assert.deepEqual(writers, ["services/booking.ts"]);
   });
 });
