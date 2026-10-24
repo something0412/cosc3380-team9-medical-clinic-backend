@@ -3,6 +3,7 @@ import { CLINIC_TODAY } from "../../lib/clinicTime.js";
 import { pool } from "../../lib/db.js";
 import { withTransaction } from "../../lib/transaction.js";
 import { HttpError } from "../../middleware/errorHandler.js";
+import { getOutstandingBalance } from "../../services/billing.js";
 import {
   addEmergencyContact,
   contactInfoSchema,
@@ -82,22 +83,14 @@ receptionistPatientsRouter.get("/api/receptionist/patients/:id", async (req, res
     [patientId]
   );
 
-  // get what the patient still owes on all unpaid invoices
-  const balance = await pool.query(
-    `
-    SELECT COALESCE(SUM(GREATEST(i.amount - COALESCE(paid.total, 0), 0)), 0)::numeric(10, 2) AS balance
-    FROM invoice i
-    LEFT JOIN (SELECT invoice_id, SUM(amount_paid) AS total FROM payment GROUP BY invoice_id) paid ON paid.invoice_id = i.invoice_id
-    WHERE i.patient_id = $1 AND i.status <> 'Paid'
-    `,
-    [patientId]
-  );
+  // get what the patient still owes, the same balance the patient and Admin see
+  const balance = await getOutstandingBalance(patientId);
 
   res.json({
     ...patient,
     forms: forms.rows,
     appointments: appointments.rows,
-    balance: balance.rows[0].balance,
+    balance,
   });
 });
 

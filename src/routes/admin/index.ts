@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { pool } from "../../lib/db.js";
+import { adminBillingRouter } from "./billing.js";
 import { adminEmployeesRouter } from "./employees.js";
 import { adminOfficesRouter } from "./offices.js";
 import { adminPatientsRouter } from "./patients.js";
@@ -21,6 +22,7 @@ adminRouter.use("/time-slots", adminTimeSlotsRouter);
 adminRouter.use("/staff", adminStaffRouter);
 adminRouter.use("/patients", adminPatientsRouter);
 adminRouter.use(adminReportsRouter);
+adminRouter.use(adminBillingRouter);
 
 // employee types for role selection
 adminRouter.get("/employee-types", async (_req, res) => {
