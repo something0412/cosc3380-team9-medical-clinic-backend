@@ -12,6 +12,7 @@ declare module "express-session" {
     role?: "patient" | "doctor" | "admin" | "staff" | "lab";
     patientId?: number;
     employeeId?: number;
+    employeeType?: string;
     firstName?: string;
     lastName?: string;
   }
@@ -43,7 +44,8 @@ async function startSession(
   role: "patient" | "doctor" | "admin" | "staff" | "lab",
   id: number,
   firstName: string,
-  lastName: string
+  lastName: string,
+  employeeType?: string
 ) {
   await new Promise<void>((resolve, reject) => {
     req.session.regenerate((error) => {
@@ -56,6 +58,7 @@ async function startSession(
         req.session.patientId = id;
       } else {
         req.session.employeeId = id;
+        req.session.employeeType = employeeType;
       }
 
       req.session.save((saveError) => {
@@ -180,7 +183,7 @@ authRouter.post("/api/auth/staff/login", async (req, res) => {
     throw new HttpError(401, "Invalid staff ID or password");
   }
 
-  await startSession(req, row.role, row.employeeId, row.firstName, row.lastName);
+  await startSession(req, row.role, row.employeeId, row.firstName, row.lastName, row.employeeType);
 
   const { passwordHash: _, ...employee } = row;
   res.json(employee);
@@ -188,12 +191,12 @@ authRouter.post("/api/auth/staff/login", async (req, res) => {
 
 // current user
 authRouter.get("/api/auth/me", (req, res) => {
-  const { role, patientId, employeeId, firstName, lastName } = req.session;
+  const { role, patientId, employeeId, employeeType, firstName, lastName } = req.session;
   if (!role) {
     res.status(401).json({ error: "Not logged in" });
     return;
   }
-  res.json({ role, id: role === "patient" ? patientId : employeeId, firstName, lastName });
+  res.json({ role, id: role === "patient" ? patientId : employeeId, employeeType, firstName, lastName });
 });
 
 // log out
