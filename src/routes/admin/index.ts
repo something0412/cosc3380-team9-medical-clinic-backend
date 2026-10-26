@@ -9,6 +9,7 @@ import { adminSchedulesRouter } from "./schedules.js";
 import { adminShiftsRouter, adminTimeSlotsRouter } from "./shifts.js";
 import { adminSpecialtiesRouter } from "./specialties.js";
 import { adminStaffRouter } from "./staff.js";
+import { adminFeesRouter } from "./fees.js";
 
 // mounted at /api/admin behind requireRole("admin")
 export const adminRouter = Router();
@@ -23,6 +24,7 @@ adminRouter.use("/staff", adminStaffRouter);
 adminRouter.use("/patients", adminPatientsRouter);
 adminRouter.use(adminReportsRouter);
 adminRouter.use(adminBillingRouter);
+adminRouter.use("/fees", adminFeesRouter);
 
 // employee types for role selection
 adminRouter.get("/employee-types", async (_req, res) => {
