@@ -20,11 +20,14 @@ declare module "express-session" {
   }
 }
 
-const patientLoginSchema = z.object({
-  patientId: z.coerce.number().int().positive(),
-  email: z.email().trim().toLowerCase(),
-  password: z.string().min(1),
-});
+// patients sign in with their patient number or their email, plus their password
+const patientLoginSchema = z
+  .object({
+    patientId: z.coerce.number().int().positive().optional(),
+    email: z.email().trim().toLowerCase().optional(),
+    password: z.string().min(1),
+  })
+  .refine((body) => body.patientId || body.email, "Enter your patient number or email");
 
 const staffLoginSchema = z.object({
   employeeId: z.coerce.number().int().positive(),
@@ -74,12 +77,12 @@ authRouter.post("/api/auth/patient/login", async (req, res) => {
       c.password_hash AS "passwordHash"
     FROM patient p
     JOIN patient_creds c ON c.patient_id = p.patient_id
-    WHERE p.patient_id = $1
-      AND LOWER(c.username) = $2
+    WHERE ($1::int IS NULL OR p.patient_id = $1)
+      AND ($2::text IS NULL OR LOWER(c.username) = $2)
       AND p.is_active
       AND c.is_active
     `,
-    [patientId, email]
+    [patientId ?? null, email ?? null]
   );
 
   const row = result.rows[0];
