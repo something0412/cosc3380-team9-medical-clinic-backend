@@ -164,9 +164,9 @@ export async function getOutstandingBalance(patientId: number) {
 export async function getPatientBilling(patientId: number) {
   const invoices = await pool.query(
     `
-    SELECT i.invoice_id AS "invoiceId", to_char(i.issue_date, 'YYYY-MM-DD') AS "issueDate", i.amount, i.status, b.paid, b.balance
+    SELECT ${INVOICE_COLUMNS}
     FROM invoice i
-    JOIN (${INVOICE_BALANCES}) b ON b.invoice_id = i.invoice_id
+    ${INVOICE_JOINS}
     WHERE i.patient_id = $1 AND i.status <> 'Void'
     ORDER BY i.issue_date DESC, i.invoice_id DESC
     `,

@@ -290,7 +290,7 @@ export async function getPatientChart(patientId: number, c: Clinician) {
       sp.name AS specialty,
       a.status,
       s.visit_reason AS "visitReason",
-      COALESCE((SELECT json_agg(d.name ORDER BY d.created_at, d.visit_diagnosis_id) FROM visit_diagnosis d WHERE d.appointment_id = a.appointment_id), '[]') AS diagnoses
+      COALESCE((SELECT json_agg(d.name ORDER BY d.created_at, d.visit_diagnosis_id) FROM visit_diagnosis d WHERE d.appointment_id = a.appointment_id AND d.is_active), '[]') AS diagnoses
     FROM appointment a
     JOIN time_slot ts ON ts.time_slot_id = a.time_slot_id
     JOIN employee e ON e.employee_id = a.doctor_id
@@ -343,7 +343,7 @@ export async function listVisitDiagnoses(db: Pool | PoolClient, appointmentId: n
       d.recorded_by_employee_id AS "recordedById", e.first_name || ' ' || e.last_name AS "recordedBy", to_char(d.created_at, 'YYYY-MM-DD HH24:MI') AS "createdAt"
     FROM visit_diagnosis d
     JOIN employee e ON e.employee_id = d.recorded_by_employee_id
-    WHERE d.appointment_id = $1
+    WHERE d.appointment_id = $1 AND d.is_active
     ORDER BY d.created_at, d.visit_diagnosis_id
     `,
     [appointmentId]
@@ -414,13 +414,14 @@ export async function saveVisitSummary(
 }
 
 // a diagnosis already on the visit isn't added twice, even across repeated requests
+// one that was removed can be added again
 export async function addVisitDiagnoses(client: PoolClient, appointmentId: number, employeeId: number, diagnoses: { name: string; reasoning?: string | null }[]) {
   for (const diagnosis of diagnoses) {
     await client.query(
       `
       INSERT INTO visit_diagnosis (appointment_id, name, reasoning, recorded_by_employee_id, created_at)
       SELECT $1, $2::text, $3, $4, ${CLINIC_NOW}
-      WHERE NOT EXISTS (SELECT 1 FROM visit_diagnosis WHERE appointment_id = $1 AND lower(name) = lower($2::text))
+      WHERE NOT EXISTS (SELECT 1 FROM visit_diagnosis WHERE appointment_id = $1 AND lower(name) = lower($2::text) AND is_active)
       `,
       [appointmentId, diagnosis.name, diagnosis.reasoning ?? null, employeeId]
     );

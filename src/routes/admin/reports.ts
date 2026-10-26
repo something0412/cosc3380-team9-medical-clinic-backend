@@ -53,9 +53,12 @@ adminReportsRouter.get("/dashboard", async (req, res) => {
   });
 });
 
-// appointment activity
-adminReportsRouter.get("/analytics/appointments", async (_req, res) => {
-  const summary = await pool.query(`
+// appointment activity for appointments dated in the year
+adminReportsRouter.get("/analytics/appointments", async (req, res) => {
+  const year = yearQuery.parse(req.query.year) ?? new Date().getFullYear();
+
+  const summary = await pool.query(
+    `
     SELECT
       count(*)::int AS total,
       count(*) FILTER (WHERE status <> 'Scheduled')::int AS "pastTotal",
@@ -66,17 +69,24 @@ adminReportsRouter.get("/analytics/appointments", async (_req, res) => {
       count(*) FILTER (WHERE booking_channel = 'Phone')::int AS "phoneBookings",
       count(*) FILTER (WHERE booking_channel = 'Web')::int AS "webBookings"
     FROM appointment
-  `);
+    WHERE EXTRACT(YEAR FROM appointment_date) = $1
+    `,
+    [year]
+  );
 
-  const byStatus = await pool.query(`
+  const byStatus = await pool.query(
+    `
     SELECT s.status, count(a.appointment_id)::int AS count
     FROM (VALUES (1, 'Completed'), (2, 'Scheduled'), (3, 'Cancelled'), (4, 'No Show')) AS s(sort, status)
-    LEFT JOIN appointment a ON a.status = s.status
+    LEFT JOIN appointment a ON a.status = s.status AND EXTRACT(YEAR FROM a.appointment_date) = $1
     GROUP BY s.sort, s.status
     ORDER BY s.sort
-  `);
+    `,
+    [year]
+  );
 
-  const bySpecialty = await pool.query(`
+  const bySpecialty = await pool.query(
+    `
     SELECT
       s.name AS specialty,
       count(a.appointment_id) FILTER (WHERE a.status = 'Completed')::int AS completed,
@@ -85,35 +95,45 @@ adminReportsRouter.get("/analytics/appointments", async (_req, res) => {
       count(a.appointment_id) FILTER (WHERE a.status = 'No Show')::int AS "noShows",
       count(a.appointment_id)::int AS total
     FROM specialty s
-    LEFT JOIN appointment a ON a.specialty_id = s.specialty_id
+    LEFT JOIN appointment a ON a.specialty_id = s.specialty_id AND EXTRACT(YEAR FROM a.appointment_date) = $1
     WHERE s.is_active
     GROUP BY s.specialty_id, s.name
     ORDER BY total DESC, s.name
-  `);
+    `,
+    [year]
+  );
 
-  res.json({ ...summary.rows[0], byStatus: byStatus.rows, bySpecialty: bySpecialty.rows });
+  res.json({ ...summary.rows[0], year, byStatus: byStatus.rows, bySpecialty: bySpecialty.rows });
 });
 
-// billing and collections
+// billing for invoices issued in the year, and payments made in the year
 adminReportsRouter.get("/analytics/billing", async (req, res) => {
   const year = yearQuery.parse(req.query.year) ?? new Date().getFullYear();
 
-  const summary = await pool.query(`
+  const summary = await pool.query(
+    `
     SELECT
-      (SELECT COALESCE(sum(amount), 0) FROM invoice WHERE status <> 'Void')::float AS billed,
-      (SELECT COALESCE(sum(amount_paid), 0) FROM payment WHERE status <> 'Refunded')::float AS collected,
-      (SELECT count(*) FROM invoice WHERE status <> 'Void')::int AS "invoiceCount",
-      (SELECT count(*) FROM invoice WHERE status = 'Paid')::int AS "paidCount",
-      (SELECT count(*) FROM invoice WHERE status = 'Pending')::int AS "pendingCount",
-      (SELECT count(*) FROM invoice WHERE status = 'Overdue')::int AS "overdueCount"
-  `);
+      (SELECT COALESCE(sum(amount), 0) FROM invoice WHERE status <> 'Void' AND EXTRACT(YEAR FROM issue_date) = $1)::float AS billed,
+      (SELECT COALESCE(sum(amount_paid), 0) FROM payment WHERE status <> 'Refunded' AND EXTRACT(YEAR FROM payment_date) = $1)::float AS collected,
+      (SELECT count(*) FROM invoice WHERE status <> 'Void' AND EXTRACT(YEAR FROM issue_date) = $1)::int AS "invoiceCount",
+      (SELECT count(*) FROM invoice WHERE status = 'Paid' AND EXTRACT(YEAR FROM issue_date) = $1)::int AS "paidCount",
+      (SELECT count(*) FROM invoice WHERE status = 'Pending' AND EXTRACT(YEAR FROM issue_date) = $1)::int AS "pendingCount",
+      (SELECT count(*) FROM invoice WHERE status = 'Overdue' AND EXTRACT(YEAR FROM issue_date) = $1)::int AS "overdueCount"
+    `,
+    [year]
+  );
 
-  const balances = await pool.query(`
+  const balances = await pool.query(
+    `
     SELECT
       COALESCE(sum(b.balance), 0)::float AS outstanding,
       COALESCE(sum(b.balance) FILTER (WHERE b.status = 'Overdue'), 0)::float AS overdue
     FROM (${INVOICE_BALANCES}) b
-  `);
+    JOIN invoice i ON i.invoice_id = b.invoice_id
+    WHERE EXTRACT(YEAR FROM i.issue_date) = $1
+    `,
+    [year]
+  );
 
   const byMonth = await pool.query(
     `
@@ -129,16 +149,20 @@ adminReportsRouter.get("/analytics/billing", async (req, res) => {
     [year]
   );
 
-  const byPaymentType = await pool.query(`
+  const byPaymentType = await pool.query(
+    `
     SELECT t.name AS "paymentType", count(p.payment_id)::int AS payments, COALESCE(sum(p.amount_paid), 0)::float AS amount
     FROM payment_type t
-    LEFT JOIN payment p ON p.payment_type_id = t.payment_type_id AND p.status <> 'Refunded'
+    LEFT JOIN payment p ON p.payment_type_id = t.payment_type_id AND p.status <> 'Refunded' AND EXTRACT(YEAR FROM p.payment_date) = $1
     WHERE t.is_active
     GROUP BY t.payment_type_id, t.name
     ORDER BY amount DESC
-  `);
+    `,
+    [year]
+  );
 
-  const unpaid = await pool.query(`
+  const unpaid = await pool.query(
+    `
     SELECT
       i.invoice_id AS "invoiceId",
       pt.first_name || ' ' || pt.last_name AS "patientName",
@@ -149,9 +173,11 @@ adminReportsRouter.get("/analytics/billing", async (req, res) => {
     FROM invoice i
     JOIN (${INVOICE_BALANCES}) b ON b.invoice_id = i.invoice_id
     JOIN patient pt ON pt.patient_id = i.patient_id
-    WHERE b.balance > 0
+    WHERE b.balance > 0 AND EXTRACT(YEAR FROM i.issue_date) = $1
     ORDER BY i.issue_date, i.invoice_id
-  `);
+    `,
+    [year]
+  );
 
   res.json({
     ...summary.rows[0],

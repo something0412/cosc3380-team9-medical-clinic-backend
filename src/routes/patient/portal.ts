@@ -1,10 +1,22 @@
 import { Router } from "express";
 import { CLINIC_TODAY } from "../../lib/clinicTime.js";
 import { pool } from "../../lib/db.js";
+import { HttpError } from "../../middleware/errorHandler.js";
 import { getOutstandingBalance, getPatientBilling } from "../../services/billing.js";
-import { listAppointments } from "../../services/booking.js";
+import { getAppointment, listAppointments } from "../../services/booking.js";
+import { getVisitRecord } from "../../services/clinical.js";
 
 export const patientPortalRouter = Router();
+
+// one of my visits for the visit summary report (nursing notes stay with the care team)
+patientPortalRouter.get("/api/patient/:id/visits/:appointmentId", async (req, res) => {
+    const patientId = Number(req.params.id);
+    const appointment = await getAppointment(pool, Number(req.params.appointmentId) || 0);
+    if (!appointment || appointment.patientId !== patientId) throw new HttpError(404, "Visit not found");
+
+    const { nursingNotes: _, ...record } = await getVisitRecord(appointment.appointmentId);
+    res.json({ ...appointment, ...record });
+});
 
 // the same appointment list the staff see, with the date and time names this page already uses
 patientPortalRouter.get("/api/patient/:id/appointments", async (req, res) => {
@@ -64,7 +76,7 @@ patientPortalRouter.get("/api/patient/:id/records", async (req, res) => {
             (
                 SELECT string_agg(d.name, ', ' ORDER BY d.created_at, d.visit_diagnosis_id)
                 FROM visit_diagnosis d
-                WHERE d.appointment_id = a.appointment_id
+                WHERE d.appointment_id = a.appointment_id AND d.is_active
             ) AS diagnosis,
             s.visit_reason AS "visitReason",
             s.notes

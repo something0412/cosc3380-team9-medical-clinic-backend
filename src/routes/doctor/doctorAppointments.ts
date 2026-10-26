@@ -7,7 +7,17 @@ import { withTransaction } from "../../lib/transaction.js";
 import { setBillingEmployee } from "../../services/billing.js";
 import { HttpError } from "../../middleware/errorHandler.js";
 import { getAppointment, listAppointments } from "../../services/booking.js";
-import { addVisitDiagnoses, asClinician, assertCanSeePatient, getPatientAlerts, getPrescription, getVisitRecord, lockVisit, saveVisitSummary } from "../../services/clinical.js";
+import {
+  addVisitDiagnoses,
+  asClinician,
+  assertCanSeePatient,
+  getPatientAlerts,
+  getPrescription,
+  getVisitRecord,
+  listVisitDiagnoses,
+  lockVisit,
+  saveVisitSummary,
+} from "../../services/clinical.js";
 import { bookingDate } from "../booking.js";
 
 export const doctorAppointmentsRouter = Router();
@@ -110,6 +120,32 @@ doctorAppointmentsRouter.post("/api/doctor/appointments/:id/diagnoses", async (r
     return addVisitDiagnoses(client, appointmentId, doctor.employeeId, diagnoses);
   });
   res.status(201).json(all);
+});
+
+// remove a diagnosis I added by mistake, and get back every diagnosis still on the visit
+// it stays in the database as inactive, like a removed allergy
+doctorAppointmentsRouter.patch("/api/doctor/diagnoses/:id/remove", async (req, res) => {
+  const doctor = me(req);
+  const diagnosisId = id("a diagnosis").parse(req.params.id);
+
+  const all = await withTransaction(async (client) => {
+    // get the diagnosis's visit and who added it
+    const found = await client.query(
+      `SELECT appointment_id AS "appointmentId", recorded_by_employee_id AS "recordedById" FROM visit_diagnosis WHERE visit_diagnosis_id = $1`,
+      [diagnosisId]
+    );
+    const diagnosis = found.rows[0];
+    if (!diagnosis) throw new HttpError(404, "Diagnosis not found");
+
+    // the visit has to be mine and still open for documenting
+    await lockVisit(client, diagnosis.appointmentId, doctor);
+    if (diagnosis.recordedById !== doctor.employeeId) throw new HttpError(403, "Only the doctor who added a diagnosis can remove it");
+
+    const removed = await client.query(`UPDATE visit_diagnosis SET is_active = false WHERE visit_diagnosis_id = $1 AND is_active`, [diagnosisId]);
+    if (!removed.rowCount) throw new HttpError(409, "This diagnosis was already removed");
+    return listVisitDiagnoses(client, diagnosis.appointmentId);
+  });
+  res.json(all);
 });
 
 // write a prescription at this visit, with all of its medications or none of them
