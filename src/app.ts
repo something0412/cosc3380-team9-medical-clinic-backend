@@ -18,7 +18,6 @@ import { doctorLabOrdersRouter } from "./routes/doctor/doctorLabOrders.js";
 import { doctorPatientsRouter } from "./routes/doctor/doctorPatients.js";
 import { doctorReferralsRouter } from "./routes/doctor/doctorReferrals.js";
 import { doctorScheduleRouter } from "./routes/doctor/doctorSchedule.js";
-import { healthRouter } from "./routes/health.js";
 import { labDashboardRouter } from "./routes/lab/labDashboard.js";
 import { labOrdersRouter } from "./routes/lab/labOrders.js";
 import { nurseRouter } from "./routes/nurse/index.js";
@@ -30,7 +29,6 @@ import { publicRouter } from "./routes/public.js";
 import { receptionistRouter } from "./routes/receptionist/index.js";
 import { staffPatientsRouter } from "./routes/staff/patients.js";
 import { staffProfileRouter } from "./routes/staff/profile.js";
-import { templateRouter } from "./routes/template.js";
 
 export const app = express();
 
@@ -117,7 +115,6 @@ app.use("/api/nurse", requireStaffType("nurse"));
 // receptionist portal: receptionists only
 app.use("/api/receptionist", requireStaffType("receptionist"));
 
-app.use(healthRouter);
 app.use(authRouter);
 app.use(doctorDashboardRouter);
 app.use(doctorPatientsRouter);
@@ -136,8 +133,6 @@ app.use(patientProfileRouter);
 app.use(patientReferralsRouter);
 app.use(patientPaymentsRouter);
 app.use(staffProfileRouter);
-app.use(templateRouter);
-
 // public website information, anyone can read it
 app.use("/api/public", publicRouter);
 
