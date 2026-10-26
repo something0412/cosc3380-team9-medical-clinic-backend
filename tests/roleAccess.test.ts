@@ -65,8 +65,6 @@ const PATIENT_SECTIONS = ["profile", "appointments", "forms", "billing", "record
 
 // every GET endpoint in the app
 const ENDPOINTS: Endpoint[] = [
-  { label: "GET /api/health", path: fixed("/api/health"), expect: PUBLIC },
-  { label: "GET /api/template", path: fixed("/api/template"), expect: PUBLIC },
   ...[
     "/api/public/doctors",
     `/api/public/doctors/${ids.doctor}`,

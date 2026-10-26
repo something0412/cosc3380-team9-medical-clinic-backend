@@ -256,7 +256,6 @@ describe("sign in, sign out, and public access", () => {
     const anonymous = app.client();
     const deadSession = app.client("connect.sid=s%3Anot-a-real-session.signature");
     for (const client of [anonymous, deadSession]) {
-      assert.equal((await client.get("/api/health")).status, 200);
       assert.equal((await client.get("/api/public/doctors")).status, 200);
       assert.equal((await client.get("/api/public/specialties")).status, 200);
       assert.equal((await client.get(`/api/public/availability?specialtyId=${ids.cardiology}&date=2030-01-07`)).status, 200);

@@ -58,8 +58,6 @@ const STAFF_TYPE_SQL = `
 
 // these never use the signed in user, so they skip the lookup
 const NO_USER_PATHS = [
-  "/api/health",
-  "/api/template",
   "/api/public",
   "/api/auth/patient/login",
   "/api/auth/patient/signup",
