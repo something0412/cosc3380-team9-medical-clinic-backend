@@ -108,14 +108,24 @@ receptionistPatientsRouter.post("/api/receptionist/patients/:id/forms/:formTypeI
 
     // check the patient hasn't completed this form already
     const done = await client.query(
-      `-- TODO P15: forms: check the patient hasn't completed this form already`,
+      `SELECT 1 FROM form_submission WHERE patient_id = $1 AND form_type_id = $2 AND status = 'Completed'`,
       [patientId, formTypeId]
     );
     if (done.rowCount !== 0) throw new HttpError(400, "This form is already completed");
 
     // save a completed submission dated today (only for an active form)
     const result = await client.query(
-      `-- TODO P16: forms: save a completed form submission dated today`,
+      `
+      INSERT INTO form_submission (patient_id, form_type_id, status, submitted_date)
+      SELECT $1, form_type_id, 'Completed', ${CLINIC_TODAY}
+      FROM form_type
+      WHERE form_type_id = $2 AND is_active
+      RETURNING
+        form_submission_id AS "formSubmissionId",
+        form_type_id AS "formTypeId",
+        status,
+        to_char(submitted_date, 'YYYY-MM-DD') AS "submittedDate"
+      `,
       [patientId, formTypeId]
     );
     if (result.rowCount === 0) throw new HttpError(404, "Form not found");
