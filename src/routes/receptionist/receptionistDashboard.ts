@@ -19,12 +19,18 @@ receptionistDashboardRouter.get("/api/receptionist/dashboard", async (req, res) 
 
   // get how many unpaid invoices my office has and how much is left on them, using the same balance as billing
   const unpaid = await pool.query(
-    `-- TODO S11: dashboard: unpaid invoices at my office and their total`,
+    `
+    SELECT count(*)::int AS count, COALESCE(sum(b.balance), 0)::numeric(10, 2) AS total
+    FROM (${INVOICE_BALANCES}) b
+    JOIN invoice i ON i.invoice_id = b.invoice_id
+    JOIN appointment a ON a.appointment_id = i.appointment_id
+    WHERE a.office_id = $1 AND b.balance > 0
+    `,
     [officeId]
   );
 
   // get how many insurance records still need to be verified
-  const pendingInsurance = await pool.query(`-- TODO S12: dashboard: insurance waiting to be verified`);
+  const pendingInsurance = await pool.query(`SELECT count(*)::int AS count FROM insurance WHERE status = 'Pending'`);
 
   res.json({
     officeName: office.rows[0]?.officeName ?? "",
