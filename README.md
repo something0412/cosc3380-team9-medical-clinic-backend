@@ -1,108 +1,75 @@
-# Medical Clinic — Backend
+# Medical Clinic Backend
 
-Express + TypeScript API backed by PostgreSQL (Supabase). No ORM — all database
-access is raw SQL via the [`pg`](https://node-postgres.com/) driver.
+This is the API for the COSC 3380 Medical Clinic project. It uses Express and TypeScript with a PostgreSQL database hosted on Supabase. There's no ORM. Every query is handwritten SQL through the [pg](https://node-postgres.com/) driver, and request bodies are checked with [zod](https://zod.dev/).
 
-## Stack
+## Getting started
 
-- **Express 5** — because it's v5, route handlers that `throw` or return a
-  rejected promise are automatically caught and forwarded to the error
-  handler. You don't need to wrap async handlers in try/catch yourself.
-- **TypeScript**
-- **pg** — a plain connection pool (`src/lib/db.ts`), no ORM. Every route
-  writes its own SQL.
-- **zod** — validates environment variables on startup (`src/config/env.ts`).
-- **PostgreSQL via Supabase**
-
-There used to be a Prisma setup here (schema file, generated client,
-migrations). It's been removed in favor of raw SQL, since the point of this
-project is practicing SQL directly rather than hiding it behind an ORM.
-
-## Setup
-
-Install dependencies
+You need Node.js 22. Install the dependencies first.
 
 ```bash
 npm install
 ```
 
-Create `.env` file
+Then create a `.env` file in this folder. Git ignores it.
+
+- `DATABASE_URL` is the Supabase connection string. Use the session pooler on port 5432. This one is required.
+- `SESSION_SECRET` signs the login cookies. It's required in production.
+- `PORT` is optional and defaults to 4000.
+- `FRONTEND_URL` is the frontend address allowed by CORS. It defaults to `http://localhost:5173`.
+
+Start the server with this command. It restarts when you save a file.
 
 ```bash
-touch .env
+npm run dev
 ```
 
-Edit `.env` and set `DATABASE_URL` to your Supabase project's **pooled**
-connection string (port 6543, via Supavisor/pgbouncer).
+To run the compiled version instead, use `npm run build` and then `npm start`.
+
+If a staff member needs a login or a new password, `npm run set-staff-password -- <employeeId> <password>` creates or resets it in the database that `DATABASE_URL` points to.
+
+## Tests
+
+The tests run the real app against a local PostgreSQL database and never touch Supabase. Setup steps are in [tests/README.md](tests/README.md).
 
 ```bash
-npm run dev     # tsx watch src/index.ts — restarts on file changes
+npm test
+npx tsc -p tests
 ```
-
-Server listens on `PORT` from `.env` (default `4000`).
 
 ## Project layout
 
 ```text
 src/
-  index.ts              # starts the HTTP server
-  app.ts                # builds the Express app: middleware + routers, in order
-  config/env.ts          # validates process.env with zod
-  lib/db.ts             # the pg Pool every route queries through
-  middleware/
-    errorHandler.ts     # HttpError class + notFoundHandler + errorHandler
-  routes/
-    health.ts           # GET /api/health
-    patients.ts         # GET /api/patients
-    template.ts         # GET /api/template
+  app.ts                sets up the Express app and mounts the routes
+  routes/               route files, grouped by role
+  services/booking.ts   shared booking rules for patients and receptionists
+  services/patients.ts  shared patient rules for sign up, the front desk, profiles, and Admin
+  services/referrals.ts referral rules for doctors and the patient portal
+  services/billing.ts   invoices, payments, and the balance every billing view uses
+  services/clinical.ts  charts, visit records, allergies, and home medications for doctors and nurses
+  services/employees.ts employee records, roles, status, and logins for both admin staff pages
+  middleware/           signed in user check, error handler, and role checks
+  lib/                  database pool, transactions, password hashing, and clinic time
+database/               schema snapshot and migrations
+tests/                  backend tests
 ```
 
-## Current routes
+Most route files write their full `/api/...` paths and are mounted in `app.ts`. The public website routes are under `/api/public` and the admin routes are under `/api/admin`. Every role's routes work.
 
-| Method | Path             | What it does                                                                                       |
-| ------ | ---------------- | --------------------------------------------------------------------------------------------------- |
-| GET    | `/api/health`    | Returns `{ status: "ok" }`. No DB access.                                                            |
-| GET    | `/api/patients`  | Queries the real `patient` table and returns the rows as JSON.                                      |
-| GET    | `/api/template`  | Returns a demo JSON payload with a timestamp. No DB access. Exists only to prove the frontend can reach the backend. |
+## Writing routes
 
-All routes are prefixed with `/api` — that prefix is set inside each route
-file itself (`router.get("/api/...")`), not globally in `app.ts`.
+- Put a new route in the folder for the role that uses it and mount it in `app.ts`. The folder alone doesn't protect anything, so add an access check.
+- Use `req.user` for access checks. It's loaded from the database on every signed in request and has the role, staff type, and office.
+- Alias columns to camelCase in the SQL, like `first_name AS "firstName"`.
+- Throw `new HttpError(404, "Appointment not found")` for expected errors. Anything unexpected becomes a generic 500 without database details.
+- Use `CLINIC_TODAY` and `CLINIC_NOW` from `src/lib/clinicTime.ts` for clinic dates. The database runs on UTC, so `CURRENT_DATE` can already be tomorrow in Chicago.
+- Booking, check in, check out, No Show, and the staff appointment lists go through `src/services/booking.ts`. Don't add separate scheduling checks.
+- Creating, approving, denying, and listing referrals go through `src/services/referrals.ts`. Booking still decides whether a referral can be used for an appointment.
+- Invoices, payments, and balances go through `src/services/billing.ts`. Only admins create invoices or record payments.
+- Patient charts, visit records, allergies, and home medications go through `src/services/clinical.ts` for both doctors and nurses. A doctor only sees the charts of patients they're assigned to or have a booked or finished visit with. A nurse only sees patients with a visit at their office today.
+- Creating, editing, activating, and deactivating employees go through `src/services/employees.ts`, so the Employees and Staff pages follow the same rules. A doctor with upcoming appointments can't be deactivated.
+- Patient sign up, front desk registration, portal logins, status, contact info, emergency contacts, and insurance go through `src/services/patients.ts`.
 
-## How to add a new route (e.g. appointments)
+## Database
 
-There's **no controllers folder** — each `routes/*.ts` file both maps the URL
-and writes the SQL directly. Copy the shape of `routes/patients.ts`:
-
-```ts
-import { Router } from "express";
-import { pool } from "../lib/db.js";
-
-export const appointmentsRouter = Router();
-
-appointmentsRouter.get("/api/appointments", async (_req, res) => {
-  const result = await pool.query(`SELECT ... FROM appointment`);
-  res.json(result.rows);
-});
-```
-
-Then wire it into `app.ts`:
-
-```ts
-import { appointmentsRouter } from "./routes/appointments.js";
-// ...
-app.use(appointmentsRouter);
-```
-
-A few conventions to keep:
-
-- **Column names**: the real tables (see `clinic_database_dump.sql`) use
-  snake_case (`first_name`, `patient_id`, ...). Alias them to camelCase in the
-  `SELECT` itself (`first_name AS "firstName"`) so the JSON the API returns
-  matches normal JS naming — do the translation once, in the SQL, not in the
-  frontend.
-- **Expected errors**: `throw new HttpError(404, "Appointment not found")`
-  (or whatever status/message fits) instead of hand-rolling a response.
-  `errorHandler` turns it into the right JSON automatically.
-- **Unexpected errors**: just let them throw. Express 5 + the error handler
-  takes care of turning a thrown/rejected error into a `500` without crashing
-  the process.
+`database/schema.sql` matches the live Supabase database. Editing files in `database/` doesn't change Supabase. Read [database/README.md](database/README.md) before adding a migration.
