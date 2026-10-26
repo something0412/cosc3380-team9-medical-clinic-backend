@@ -25,6 +25,7 @@ import { nurseRouter } from "./routes/nurse/index.js";
 import { patientPortalRouter } from "./routes/patient/portal.js";
 import { patientProfileRouter } from "./routes/patient/profile.js";
 import { patientReferralsRouter } from "./routes/patient/referrals.js";
+import { patientPaymentsRouter } from "./routes/patient/payments.js";
 import { publicRouter } from "./routes/public.js";
 import { receptionistRouter } from "./routes/receptionist/index.js";
 import { staffPatientsRouter } from "./routes/staff/patients.js";
@@ -133,6 +134,7 @@ app.use(staffPatientsRouter);
 app.use(patientPortalRouter);
 app.use(patientProfileRouter);
 app.use(patientReferralsRouter);
+app.use(patientPaymentsRouter);
 app.use(staffProfileRouter);
 app.use(templateRouter);
 
