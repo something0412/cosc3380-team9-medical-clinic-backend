@@ -11,7 +11,7 @@ nurseDashboardRouter.get("/api/nurse/dashboard", async (req, res) => {
 
   // today's visits come from the booking service, so they're counted the same way as the appointment list
   const today = (await listAppointments({ officeId }, { when: "today", includeCancelled: false })).filter((a) => a.status !== "No Show");
-  const withVitals = await pool.query(`-- TODO S01: dashboard: which of today's visits already have vitals`, [
+  const withVitals = await pool.query(`SELECT DISTINCT appointment_id AS "appointmentId" FROM patient_vitals WHERE appointment_id = ANY($1::int[])`, [
     today.map((a) => a.appointmentId),
   ]);
   const hasVitals = new Set(withVitals.rows.map((v) => v.appointmentId));
@@ -29,3 +29,4 @@ nurseDashboardRouter.get("/api/nurse/dashboard", async (req, res) => {
     waitingList,
   });
 });
+
