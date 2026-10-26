@@ -81,7 +81,13 @@ nurseSuppliesRouter.get("/api/nurse/supplies", async (req, res) => {
 
   // get my office's active supplies with type, low stock, expiring in 30 days, and amount on order (low first)
   const result = await pool.query(
-    `-- TODO S03: supplies: my office's stock`,
+    `
+    SELECT ${STOCK_COLUMNS}
+    FROM office_supply os
+    ${STOCK_JOINS}
+    WHERE os.office_id = $1 AND os.is_active AND s.is_active
+    ORDER BY os.quantity_on_hand <= os.reorder_threshold DESC, s.name, os.office_supply_id
+    `,
     [officeId]
   );
 
@@ -100,7 +106,10 @@ nurseSuppliesRouter.patch("/api/nurse/supplies/:id/use", async (req, res) => {
     // take the quantity out of my office's stock, only if there is enough
     // one conditional update, so two nurses using the last few at once can't both succeed
     const used = await client.query(
-      `-- TODO S04: supplies: take a quantity out of stock`,
+      `
+      UPDATE office_supply SET quantity_on_hand = quantity_on_hand - $1
+      WHERE office_supply_id = $2 AND office_id = $3 AND is_active AND quantity_on_hand >= $1
+      `,
       [amount, officeSupplyId, officeId]
     );
     if (!used.rowCount) {
@@ -120,7 +129,13 @@ nurseSuppliesRouter.patch("/api/nurse/supplies/:id/use", async (req, res) => {
 // get supplies for the new order dropdown
 nurseSuppliesRouter.get("/api/nurse/supply-list", async (_req, res) => {
   // get all active supplies with their type, sorted by name
-  const result = await pool.query(`-- TODO S05: supplies: all active supplies for the order form`);
+  const result = await pool.query(`
+    SELECT s.supply_id AS "supplyId", s.name, s.supply_type_id AS "supplyTypeId", st.type_name AS "supplyType"
+    FROM supply s
+    JOIN supply_type st ON st.supply_type_id = s.supply_type_id
+    WHERE s.is_active
+    ORDER BY s.name
+  `);
 
   res.json(result.rows);
 });
@@ -131,7 +146,13 @@ nurseSuppliesRouter.get("/api/nurse/supply-orders", async (req, res) => {
 
   // get my office's supply orders with supply and who ordered, open ones first, then newest
   const result = await pool.query(
-    `-- TODO S06: supplies: my office's supply orders`,
+    `
+    SELECT ${ORDER_COLUMNS}
+    FROM supply_order so
+    ${ORDER_JOINS}
+    WHERE so.office_id = $1
+    ORDER BY so.status IN ('Pending', 'Ordered') DESC, so.order_date DESC, so.supply_order_id DESC
+    `,
     [officeId]
   );
 
@@ -147,7 +168,11 @@ nurseSuppliesRouter.post("/api/nurse/supply-orders", async (req, res) => {
     const officeId = await lockActiveEmployee(client, nurseId);
     // save a pending order for my office, ordered by me, only if the supply is active
     const created = await client.query(
-      `-- TODO S07: supplies: create a pending order`,
+      `
+      INSERT INTO supply_order (supply_id, office_id, employee_id, quantity_ordered, order_date, status)
+      SELECT supply_id, $2, $3, $4, ${CLINIC_TODAY}, 'Pending' FROM supply WHERE supply_id = $1 AND is_active
+      RETURNING supply_order_id
+      `,
       [body.supplyId, officeId, nurseId, body.quantity]
     );
     if (!created.rowCount) throw new HttpError(400, "Choose an active supply");
@@ -168,7 +193,11 @@ nurseSuppliesRouter.patch("/api/nurse/supply-orders/:id/receive", async (req, re
     // mark my office's open order as received and get its supply, office and quantity
     // only an open order matches, so receiving it twice can't add the stock twice
     const order = await client.query(
-      `-- TODO S08: supplies: mark an open order received`,
+      `
+      UPDATE supply_order SET status = 'Received'
+      WHERE supply_order_id = $1 AND office_id = $2 AND status IN ('Pending', 'Ordered')
+      RETURNING supply_id, office_id, quantity_ordered
+      `,
       [supplyOrderId, officeId]
     );
     if (!order.rowCount) await refuseOrder(client, supplyOrderId, officeId, "received");
@@ -177,7 +206,12 @@ nurseSuppliesRouter.patch("/api/nurse/supply-orders/:id/receive", async (req, re
     // add the quantity to my office's stock of that supply (create the stock row if missing)
     // a stock row that was turned off is used again, since the office has the supply now
     const stock = await client.query(
-      `-- TODO S09: supplies: add the received quantity to stock`,
+      `
+      INSERT INTO office_supply (supply_id, office_id, quantity_on_hand)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (supply_id, office_id) DO UPDATE SET quantity_on_hand = office_supply.quantity_on_hand + EXCLUDED.quantity_on_hand, is_active = true
+      RETURNING office_supply_id
+      `,
       [supply_id, office_id, quantity_ordered]
     );
 
@@ -195,7 +229,7 @@ nurseSuppliesRouter.patch("/api/nurse/supply-orders/:id/cancel", async (req, res
   const order = await withTransaction(async (client) => {
     const officeId = await lockActiveEmployee(client, nurseId);
     // mark my office's open order as cancelled
-    const cancelled = await client.query(`-- TODO S10: supplies: cancel an open order`, [
+    const cancelled = await client.query(`UPDATE supply_order SET status = 'Cancelled' WHERE supply_order_id = $1 AND office_id = $2 AND status IN ('Pending', 'Ordered')`, [
       supplyOrderId,
       officeId,
     ]);

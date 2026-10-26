@@ -191,11 +191,17 @@ const NURSING_NOTE_JOINS = `
 // things to know before seeing the patient, shared by the chart and the visit view
 export async function getPatientAlerts(patientId: number, c: Clinician) {
   const allergies = await pool.query(
-    `-- TODO X02: patient alerts: active allergies`,
+    `
+    SELECT ${ALLERGY_COLUMNS}
+    FROM allergy al
+    JOIN allergy_type t ON t.allergy_type_id = al.allergy_type_id
+    WHERE al.patient_id = $1 AND al.is_active
+    ORDER BY CASE al.severity WHEN 'Severe' THEN 1 WHEN 'Moderate' THEN 2 ELSE 3 END, t.name
+    `,
     [patientId]
   );
   const homeMedications = await pool.query(
-    `-- TODO X03: patient alerts: active home medications`,
+    `SELECT ${HOME_MEDICATION_COLUMNS} FROM home_medication hm WHERE hm.patient_id = $1 AND hm.is_active ORDER BY hm.medication_name, hm.home_medication_id`,
     [patientId]
   );
   const missingForms = await pool.query(
@@ -275,7 +281,8 @@ export async function listVisitDiagnoses(db: Pool | PoolClient, appointmentId: n
 // what was recorded at one visit
 export async function getVisitRecord(appointmentId: number) {
   const vitals = await pool.query(
-    `-- TODO X04: visit: vitals recorded at this visit`,
+    `SELECT ${VITALS_COLUMNS} FROM patient_vitals v JOIN employee e ON e.employee_id = v.recorded_by_employee_id
+     WHERE v.appointment_id = $1 ORDER BY v.recorded_at DESC, v.vitals_id DESC`,
     [appointmentId]
   );
   const prescriptions = await pool.query(
@@ -358,7 +365,12 @@ export async function recordVitals(c: Clinician, appointmentId: number, readings
   return withTransaction(async (client) => {
     const { patientId } = await lockVisit(client, appointmentId, c);
     const created = await client.query(
-      `-- TODO S02: save vitals for a visit`,
+      `
+      INSERT INTO patient_vitals (patient_id, appointment_id, recorded_by_employee_id, temperature, heartrate_bpm, systolic_bp, diastolic_bp,
+        respiratory_rate, oxygen_saturation, weight_lbs, height_inches, recorded_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, ${CLINIC_NOW})
+      RETURNING vitals_id
+      `,
       [
         patientId,
         appointmentId,
@@ -416,7 +428,7 @@ export async function updateNursingNote(c: Clinician, nursingNoteId: number, not
 }
 
 export async function listAllergyTypes() {
-  const result = await pool.query(`-- TODO X13: active allergy types`);
+  const result = await pool.query(`SELECT allergy_type_id AS "allergyTypeId", name, category FROM allergy_type WHERE is_active ORDER BY name`);
   return result.rows;
 }
 
@@ -454,7 +466,7 @@ export async function addAllergy(c: Clinician, patientId: number, input: { aller
       await client.query(`UPDATE allergy SET reaction = $2, severity = $3, is_active = true WHERE allergy_id = $1`, [old.allergyId, input.reaction, input.severity]);
       return getAllergy(client, old.allergyId);
     }
-    const created = await client.query(`-- TODO X16: add an allergy`, [
+    const created = await client.query(`INSERT INTO allergy (patient_id, allergy_type_id, reaction, severity) VALUES ($1, $2, $3, $4) RETURNING allergy_id`, [
       patientId,
       input.allergyTypeId,
       input.reaction,
@@ -484,13 +496,13 @@ export async function updateAllergy(c: Clinician, allergyId: number, fields: { r
 export async function removeAllergy(c: Clinician, allergyId: number) {
   return withTransaction(async (client) => {
     if (!(await lockRecordPatient(client, c, "allergy", allergyId, "Allergy not found"))) throw new HttpError(409, "This allergy was already removed");
-    await client.query(`-- TODO X17: remove an allergy`, [allergyId]);
+    await client.query(`UPDATE allergy SET is_active = false WHERE allergy_id = $1`, [allergyId]);
     return getAllergy(client, allergyId);
   });
 }
 
 export async function listMedications() {
-  const result = await pool.query(`-- TODO X14: active medications`);
+  const result = await pool.query(`SELECT medication_id AS "medicationId", name, manufacturer FROM medication WHERE is_active ORDER BY name`);
   return result.rows;
 }
 
@@ -524,7 +536,11 @@ export async function addHomeMedication(c: Clinician, patientId: number, input: 
     if (duplicate.rowCount) throw new HttpError(409, "The patient already takes this medication. Edit it instead.");
 
     const created = await client.query(
-      `-- TODO X18: add a home medication`,
+      `
+      INSERT INTO home_medication (patient_id, medication_id, medication_name, category, dosage, frequency, start_date)
+      VALUES ($1, $2, $3, $4, $5, $6, ${CLINIC_TODAY})
+      RETURNING home_medication_id
+      `,
       [patientId, input.medicationId ?? null, name, input.category ?? null, input.dosage ?? null, input.frequency ?? null]
     );
     return getHomeMedication(client, created.rows[0].home_medication_id);
@@ -565,7 +581,7 @@ export async function stopHomeMedication(c: Clinician, homeMedicationId: number)
     if (!(await lockRecordPatient(client, c, "home_medication", homeMedicationId, "Home medication not found"))) {
       throw new HttpError(409, "This medication was already stopped");
     }
-    await client.query(`-- TODO X19: stop a home medication`, [homeMedicationId]);
+    await client.query(`UPDATE home_medication SET is_active = false WHERE home_medication_id = $1`, [homeMedicationId]);
     return getHomeMedication(client, homeMedicationId);
   });
 }
