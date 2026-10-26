@@ -94,7 +94,16 @@ export interface InvoiceFilter {
 
 export async function listInvoices(filter: InvoiceFilter = {}) {
   const result = await pool.query(
-    `-- TODO P19: billing: invoices list (status, patient, office, name search)`,
+    `
+    SELECT ${INVOICE_COLUMNS}
+    FROM invoice i
+    ${INVOICE_JOINS}
+    WHERE ($1::text IS NULL OR ($1 = 'unpaid' AND b.balance > 0) OR i.status = $1)
+      AND ($2::int IS NULL OR i.patient_id = $2)
+      AND ($3 = '' OR pt.first_name || ' ' || pt.last_name ILIKE '%' || $3 || '%' ESCAPE '\\')
+      AND ($4::int IS NULL OR a.office_id = $4)
+    ORDER BY i.issue_date DESC, i.invoice_id DESC
+    `,
     [
       filter.status ?? null,
       filter.patientId ?? null,
@@ -108,7 +117,15 @@ export async function listInvoices(filter: InvoiceFilter = {}) {
 // newest first, for one patient or everyone
 export async function listPayments(filter: { patientId?: number; invoiceId?: number } = {}, db: Pool | PoolClient = pool) {
   const result = await db.query(
-    `-- TODO P18: billing: payments with their payment type`,
+    `
+    SELECT ${PAYMENT_COLUMNS}
+    FROM payment p
+    JOIN invoice i ON i.invoice_id = p.invoice_id
+    JOIN payment_type t ON t.payment_type_id = p.payment_type_id
+    LEFT JOIN employee h ON h.employee_id = p.handled_by
+    WHERE ($1::int IS NULL OR i.patient_id = $1) AND ($2::int IS NULL OR p.invoice_id = $2)
+    ORDER BY p.payment_date DESC, p.payment_id DESC
+    `,
     [filter.patientId ?? null, filter.invoiceId ?? null]
   );
   return result.rows;
@@ -136,7 +153,7 @@ export async function getInvoice(invoiceId: number, db: Pool | PoolClient = pool
 
 // what the patient owes across every invoice
 export async function getOutstandingBalance(patientId: number) {
-  const result = await pool.query(`-- TODO P03: how much the patient still owes across all invoices`, [
+  const result = await pool.query(`SELECT COALESCE(sum(b.balance), 0)::numeric(10, 2) AS balance FROM (${INVOICE_BALANCES}) b WHERE b.patient_id = $1`, [
     patientId,
   ]);
   return result.rows[0].balance as string;
@@ -146,7 +163,13 @@ export async function getOutstandingBalance(patientId: number) {
 // void invoices and their payments are never shown to the patient
 export async function getPatientBilling(patientId: number) {
   const invoices = await pool.query(
-    `-- TODO P17: billing: my invoices with paid and balance`,
+    `
+    SELECT i.invoice_id AS "invoiceId", to_char(i.issue_date, 'YYYY-MM-DD') AS "issueDate", i.amount, i.status, b.paid, b.balance
+    FROM invoice i
+    JOIN (${INVOICE_BALANCES}) b ON b.invoice_id = i.invoice_id
+    WHERE i.patient_id = $1 AND i.status <> 'Void'
+    ORDER BY i.issue_date DESC, i.invoice_id DESC
+    `,
     [patientId]
   );
   const shown = new Set(invoices.rows.map((invoice) => invoice.invoiceId));
@@ -158,7 +181,7 @@ export async function getPatientBilling(patientId: number) {
 }
 
 export async function listPaymentTypes() {
-  const result = await pool.query(`-- TODO P20: billing: active payment types`);
+  const result = await pool.query(`SELECT payment_type_id AS "paymentTypeId", name FROM payment_type WHERE is_active ORDER BY name`);
   return result.rows;
 }
 
@@ -166,14 +189,14 @@ export async function recordPayment(invoiceId: number, payment: { paymentTypeId:
   return withTransaction(async (client) => {
     await setBillingEmployee(client, employeeId);
     // payments on one invoice go one at a time, so together they can't pay more than it owes
-    const invoice = await client.query(`-- TODO P24: front desk pay: lock the invoice and get its status`, [invoiceId]);
+    const invoice = await client.query(`SELECT status FROM invoice WHERE invoice_id = $1 FOR NO KEY UPDATE`, [invoiceId]);
     if (!invoice.rowCount) throw new HttpError(404, "Invoice not found");
     if (invoice.rows[0].status === "Void") throw new HttpError(409, "This invoice is void and can't take payments");
 
-    const type = await client.query(`-- TODO P25: front desk pay: check the payment type is active`, [payment.paymentTypeId]);
+    const type = await client.query(`SELECT is_active AS "isActive" FROM payment_type WHERE payment_type_id = $1 FOR SHARE`, [payment.paymentTypeId]);
     if (!type.rows[0]?.isActive) throw new HttpError(400, "Choose an active payment type");
 
-    const owed = await client.query(`-- TODO P26: front desk pay: what's left on the invoice and whether the amount is too much`, [
+    const owed = await client.query(`SELECT b.balance, $2::numeric > b.balance AS "tooMuch" FROM (${INVOICE_BALANCES}) b WHERE b.invoice_id = $1`, [
       invoiceId,
       payment.amount,
     ]);
@@ -182,7 +205,11 @@ export async function recordPayment(invoiceId: number, payment: { paymentTypeId:
     if (tooMuch) throw new HttpError(409, `Only $${balance} is left on this invoice`);
 
     const inserted = await client.query(
-      `-- TODO P27: front desk pay: save the payment`,
+      `
+      INSERT INTO payment (invoice_id, payment_type_id, handled_by, amount_paid, payment_date)
+      VALUES ($1, $2, $3, $4, ${CLINIC_TODAY})
+      RETURNING payment_id AS "paymentId"
+      `,
       [invoiceId, payment.paymentTypeId, employeeId, payment.amount]
     );
 
