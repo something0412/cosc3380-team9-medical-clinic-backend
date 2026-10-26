@@ -52,7 +52,23 @@ const OFFICE_COLUMNS = `
 // active doctors, or one doctor when an ID is given
 async function loadDoctors(doctorId: number | null) {
   const result = await pool.query(
-    `-- TODO P06: active doctors with their specialties and offices (booking doctor list)`,
+    `
+    ${ACTIVE_SCHEDULES}
+    SELECT
+      e.employee_id AS "doctorId",
+      e.first_name AS "firstName",
+      e.last_name AS "lastName",
+      ${DOCTOR_SPECIALTIES} AS specialties,
+      COALESCE((
+        SELECT json_agg(json_build_object('officeId', o.office_id, 'name', o.name) ORDER BY o.name)
+        FROM office o
+        WHERE o.office_id IN (SELECT a.office_id FROM active_schedule a WHERE a.doctor_id = e.employee_id)
+      ), '[]') AS offices
+    FROM doctor d
+    JOIN employee e ON e.employee_id = d.employee_id
+    WHERE e.is_active AND ($1::int IS NULL OR e.employee_id = $1)
+    ORDER BY e.last_name, e.first_name
+    `,
     [doctorId]
   );
   return result.rows;
