@@ -38,48 +38,13 @@ receptionistPatientsRouter.get("/api/receptionist/patients/:id", async (req, res
 
   // get every active form and whether the patient completed it
   const forms = await pool.query(
-    `
-    SELECT
-      f.form_type_id AS "formTypeId",
-      f.name,
-      f.is_required AS "isRequired",
-      done.submitted_date IS NOT NULL AS completed,
-      to_char(done.submitted_date, 'YYYY-MM-DD') AS "completedDate"
-    FROM form_type f
-    LEFT JOIN LATERAL (
-      SELECT s.submitted_date
-      FROM form_submission s
-      WHERE s.form_type_id = f.form_type_id AND s.patient_id = $1 AND s.status = 'Completed'
-      ORDER BY s.submitted_date DESC
-      LIMIT 1
-    ) done ON true
-    WHERE f.is_active
-    ORDER BY f.form_type_id
-    `,
+    `-- TODO S18: patient detail: every active form and whether it's completed`,
     [patientId]
   );
 
   // get the patient's 10 newest appointments at any office
   const appointments = await pool.query(
-    `
-    SELECT
-      a.appointment_id AS "appointmentId",
-      to_char(a.appointment_date, 'YYYY-MM-DD') AS "date",
-      to_char(ts.start_time, 'HH24:MI') AS "startTime",
-      to_char(ts.end_time, 'HH24:MI') AS "endTime",
-      e.first_name || ' ' || e.last_name AS "doctorName",
-      o.name AS "officeName",
-      sp.name AS "specialty",
-      a.status
-    FROM appointment a
-    JOIN time_slot ts ON ts.time_slot_id = a.time_slot_id
-    JOIN employee e ON e.employee_id = a.doctor_id
-    JOIN office o ON o.office_id = a.office_id
-    JOIN specialty sp ON sp.specialty_id = a.specialty_id
-    WHERE a.patient_id = $1
-    ORDER BY a.appointment_date DESC, ts.start_time DESC, a.appointment_id DESC
-    LIMIT 10
-    `,
+    `-- TODO S19: patient detail: 10 newest appointments`,
     [patientId]
   );
 
@@ -116,8 +81,10 @@ receptionistPatientsRouter.put("/api/receptionist/patients/:id/insurance", async
 receptionistPatientsRouter.patch("/api/receptionist/patients/:id/insurance/status", async (req, res) => {
   const patientId = Number(req.params.id);
   const review = insuranceStatusSchema.parse(req.body);
+  if (!req.user || req.user.role === "patient") throw new HttpError(401, "Login required");
 
-  res.json(await setInsuranceStatus(patientId, review));
+  // verifying also pays the patient's unpaid invoices with this insurance
+  res.json(await setInsuranceStatus(patientId, review, req.user.employeeId));
 });
 
 // add an emergency contact
@@ -141,24 +108,14 @@ receptionistPatientsRouter.post("/api/receptionist/patients/:id/forms/:formTypeI
 
     // check the patient hasn't completed this form already
     const done = await client.query(
-      `SELECT 1 FROM form_submission WHERE patient_id = $1 AND form_type_id = $2 AND status = 'Completed'`,
+      `-- TODO P15: forms: check the patient hasn't completed this form already`,
       [patientId, formTypeId]
     );
     if (done.rowCount !== 0) throw new HttpError(400, "This form is already completed");
 
     // save a completed submission dated today (only for an active form)
     const result = await client.query(
-      `
-      INSERT INTO form_submission (patient_id, form_type_id, status, submitted_date)
-      SELECT $1, form_type_id, 'Completed', ${CLINIC_TODAY}
-      FROM form_type
-      WHERE form_type_id = $2 AND is_active
-      RETURNING
-        form_submission_id AS "formSubmissionId",
-        form_type_id AS "formTypeId",
-        status,
-        to_char(submitted_date, 'YYYY-MM-DD') AS "submittedDate"
-      `,
+      `-- TODO P16: forms: save a completed form submission dated today`,
       [patientId, formTypeId]
     );
     if (result.rowCount === 0) throw new HttpError(404, "Form not found");
