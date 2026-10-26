@@ -21,6 +21,12 @@ function myOffice(req: Request) {
   return req.user.officeId;
 }
 
+// the signed in receptionist, recorded in the appointment history
+function myId(req: Request) {
+  if (!req.user || req.user.role === "patient") throw new HttpError(401, "Login required");
+  return req.user.employeeId;
+}
+
 // get one day's appointments at my office (date and patient name search)
 receptionistAppointmentsRouter.get("/api/receptionist/appointments", async (req, res) => {
   const officeId = myOffice(req);
@@ -46,17 +52,17 @@ receptionistAppointmentsRouter.get("/api/receptionist/appointments", async (req,
 // check a patient in
 receptionistAppointmentsRouter.patch("/api/receptionist/appointments/:id/check-in", async (req, res) => {
   const officeId = myOffice(req);
-  res.json(await checkInAppointment(idParam.parse(req.params.id), officeId));
+  res.json(await checkInAppointment(idParam.parse(req.params.id), officeId, myId(req)));
 });
 
 // check a patient out, which completes the visit
 receptionistAppointmentsRouter.patch("/api/receptionist/appointments/:id/check-out", async (req, res) => {
   const officeId = myOffice(req);
-  res.json(await checkOutAppointment(idParam.parse(req.params.id), officeId));
+  res.json(await checkOutAppointment(idParam.parse(req.params.id), officeId, myId(req)));
 });
 
 // mark that the patient never came
 receptionistAppointmentsRouter.patch("/api/receptionist/appointments/:id/no-show", async (req, res) => {
   const officeId = myOffice(req);
-  res.json(await markNoShow(idParam.parse(req.params.id), officeId));
+  res.json(await markNoShow(idParam.parse(req.params.id), officeId, myId(req)));
 });

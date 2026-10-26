@@ -20,6 +20,8 @@ const availabilityQuery = z.object({
   specialtyId: id.optional(),
   officeId: id.optional(),
   patientId: id.optional(),
+  // true also sends taken times (available: false) so the page can gray them out
+  includeTaken: z.enum(["true", "false"]).optional(),
 });
 
 const bookingBody = z.object({
@@ -57,11 +59,15 @@ bookingRouter.get("/api/availability", async (req, res) => {
     throw new HttpError(403, "Receptionists can only search their own office");
   }
 
-  const slots = await findAvailability({
-    ...query,
-    officeId: user.receptionist?.officeId ?? query.officeId,
-    patientId: user.patientId ?? query.patientId,
-  });
+  const { includeTaken, ...search } = query;
+  const slots = await findAvailability(
+    {
+      ...search,
+      officeId: user.receptionist?.officeId ?? search.officeId,
+      patientId: user.patientId ?? search.patientId,
+    },
+    includeTaken === "true"
+  );
   res.json(slots);
 });
 
