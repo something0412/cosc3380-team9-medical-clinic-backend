@@ -62,7 +62,7 @@ async function getReferral(db: Pool | PoolClient, referralId: number) {
 // a doctor sees referrals they sent and referrals sent to them, never anyone else's
 export async function listDoctorReferrals(doctorId: number, view: "sent" | "received" | "all" = "all") {
   const list = async (column: string) =>
-    (await pool.query(`-- TODO D04: referrals I sent or received`, [doctorId])).rows;
+    (await pool.query(`SELECT ${REFERRAL_COLUMNS} FROM referral r ${REFERRAL_JOINS} WHERE r.${column} = $1 ${NEWEST_FIRST}`, [doctorId])).rows;
   return {
     sent: view === "received" ? [] : await list("referring_doctor_id"),
     received: view === "sent" ? [] : await list("specialist_doctor_id"),
@@ -77,7 +77,19 @@ export async function listPatientReferrals(patientId: number) {
 // active doctors and the active specialties they practice, for the referral form
 export async function listSpecialists(doctorId: number) {
   const result = await pool.query(
-    `-- TODO D18: specialists and their specialties for the referral form`,
+    `
+    SELECT
+      e.employee_id AS "doctorId",
+      e.first_name || ' ' || e.last_name AS "doctorName",
+      json_agg(json_build_object('specialtyId', sp.specialty_id, 'name', sp.name, 'requiresReferral', sp.requires_referral) ORDER BY sp.name) AS specialties
+    FROM doctor d
+    JOIN employee e ON e.employee_id = d.employee_id AND e.is_active
+    JOIN doctor_specialty ds ON ds.doctor_id = d.employee_id AND ds.is_active
+    JOIN specialty sp ON sp.specialty_id = ds.specialty_id AND sp.is_active
+    WHERE d.employee_id <> $1
+    GROUP BY e.employee_id
+    ORDER BY e.last_name, e.first_name
+    `,
     [doctorId]
   );
   return result.rows;
@@ -140,7 +152,17 @@ export async function createReferral(doctorId: number, input: NewReferral) {
   return withTransaction(async (client) => {
     await lockPeople(client, doctorId, input);
     const result = await client.query(
-      `-- TODO D19: create a referral (with the patient and specialist checks)`,
+      `
+      INSERT INTO referral (patient_id, referring_doctor_id, specialist_doctor_id, specialty_id, date_issued, expiration_date, status)
+      SELECT $1, $2, $3, $4, ${CLINIC_TODAY}, COALESCE($5::date, ${CLINIC_TODAY} + ${DEFAULT_DAYS}), 'Pending'
+      WHERE EXISTS (SELECT 1 FROM employee WHERE employee_id = $2 AND is_active)
+        AND EXISTS (SELECT 1 FROM patient WHERE patient_id = $1 AND is_active)
+        AND (${CARES_FOR_PATIENT})
+        AND $2 <> $3
+        AND ${SPECIALIST_PRACTICES}
+        AND COALESCE($5::date, ${CLINIC_TODAY} + ${DEFAULT_DAYS}) > ${CLINIC_TODAY}
+      RETURNING referral_id AS "referralId"
+      `,
       [input.patientId, doctorId, input.specialistDoctorId, input.specialtyId, input.expirationDate ?? null]
     );
     if (!result.rowCount) await refuseReferral(client, doctorId, input);
@@ -151,7 +173,11 @@ export async function createReferral(doctorId: number, input: NewReferral) {
 // only the specialist it was sent to answers it, once, before it expires
 export async function decideReferral(referralId: number, doctorId: number, decision: "Approved" | "Denied") {
   const result = await pool.query(
-    `-- TODO D20: approve or deny a referral sent to me`,
+    `
+    UPDATE referral
+    SET status = $1
+    WHERE referral_id = $2 AND specialist_doctor_id = $3 AND status = 'Pending' AND expiration_date >= ${CLINIC_TODAY}
+    `,
     [decision, referralId, doctorId]
   );
   if (result.rowCount) return getReferral(pool, referralId);
