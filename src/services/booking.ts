@@ -182,7 +182,7 @@ const APPOINTMENT_JOINS = `
 `;
 
 export async function getAppointment(db: Pool | PoolClient, appointmentId: number) {
-  const result = await db.query(`-- TODO X01: one appointment with its patient`, [
+  const result = await db.query(`SELECT ${APPOINTMENT_COLUMNS} FROM appointment a ${APPOINTMENT_JOINS} WHERE a.appointment_id = $1`, [
     appointmentId,
   ]);
   return result.rows[0] ?? null;
