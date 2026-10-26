@@ -13,7 +13,13 @@ doctorScheduleRouter.get("/api/doctor/schedule", async (req, res) => {
 
   // get how many appointments the doctor has each day for the next two weeks
   const appointments = await pool.query(
-    `-- TODO D22: how many appointments I have each day for the next two weeks`,
+    `
+    SELECT to_char(appointment_date, 'YYYY-MM-DD') AS date, count(*)::int AS appointments
+    FROM appointment
+    WHERE doctor_id = $1 AND status = 'Scheduled' AND appointment_date BETWEEN ${CLINIC_TODAY} AND ${CLINIC_TODAY} + 13
+    GROUP BY appointment_date
+    ORDER BY appointment_date
+    `,
     [doctorId]
   );
 

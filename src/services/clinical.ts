@@ -40,7 +40,7 @@ const NOT_IN_CARE = { doctor: "This patient isn't under your care", nurse: "This
 const DOCUMENTABLE = `(a.status = 'Completed' OR (a.status = 'Scheduled' AND a.checked_in_at IS NOT NULL))`;
 
 export async function assertCanSeePatient(c: Clinician, patientId: number, db: Pool | PoolClient = pool) {
-  const result = await db.query(`-- TODO X07: check this patient is in my care`, [careKey(c), patientId]);
+  const result = await db.query(`SELECT ${caresFor(c, "$1", "p.patient_id")} AS cares FROM patient p WHERE p.patient_id = $2`, [careKey(c), patientId]);
   if (!result.rowCount) throw new HttpError(404, "Patient not found");
   if (!result.rows[0].cares) throw new HttpError(403, NOT_IN_CARE[c.role]);
 }
@@ -59,7 +59,7 @@ export async function lockPatientInCare(client: PoolClient, c: Clinician, patien
   const patient = await client.query(`SELECT is_active AS "isActive" FROM patient WHERE patient_id = $1 FOR NO KEY UPDATE`, [patientId]);
   if (!patient.rowCount) throw new HttpError(404, hideAs ?? "Patient not found");
   const me = { ...c, officeId: await lockActiveEmployee(client, c.employeeId) };
-  const care = await client.query(`-- TODO X15: check the patient is in my care before a change`, [careKey(me), patientId]);
+  const care = await client.query(`SELECT ${caresFor(me, "$1", "$2::int")} AS cares`, [careKey(me), patientId]);
   if (!care.rows[0].cares) throw hideAs ? new HttpError(404, hideAs) : new HttpError(403, NOT_IN_CARE[c.role]);
   if (!patient.rows[0].isActive) throw new HttpError(409, "This patient account is inactive");
 }
@@ -69,7 +69,13 @@ export async function lockPatientInCare(client: PoolClient, c: Clinician, patien
 export async function lockVisit(client: PoolClient, appointmentId: number, c: Clinician) {
   const officeId = await lockActiveEmployee(client, c.employeeId);
   const visit = await client.query(
-    `-- TODO X05: lock a visit and check it can be documented, get its patient`,
+    `
+    SELECT a.patient_id AS "patientId", a.doctor_id AS "doctorId", a.office_id AS "officeId", a.status,
+      a.appointment_date = ${CLINIC_TODAY} AS today, ${DOCUMENTABLE} AS documentable
+    FROM appointment a
+    WHERE a.appointment_id = $1
+    FOR NO KEY UPDATE
+    `,
     [appointmentId]
   );
   const row = visit.rows[0];
@@ -85,7 +91,23 @@ export async function lockVisit(client: PoolClient, appointmentId: number, c: Cl
 
 export async function listPatientsInCare(c: Clinician, search = "") {
   const result = await pool.query(
-    `-- TODO X06: patients in my care (name search)`,
+    `
+    SELECT
+      p.patient_id AS "patientId",
+      p.first_name AS "firstName",
+      p.last_name AS "lastName",
+      to_char(p.dob, 'YYYY-MM-DD') AS dob,
+      ${c.role === "doctor" ? `EXISTS (SELECT 1 FROM patient_doctor pd WHERE pd.patient_id = p.patient_id AND pd.doctor_id = $1 AND pd.is_active) AS "assignedToMe",` : ""}
+      (SELECT to_char(max(a.appointment_date), 'YYYY-MM-DD') FROM appointment a WHERE a.patient_id = p.patient_id AND a.status = 'Completed') AS "lastVisit",
+      (
+        SELECT to_char(min(a.appointment_date), 'YYYY-MM-DD') FROM appointment a
+        WHERE a.patient_id = p.patient_id AND a.status = 'Scheduled' AND a.appointment_date >= ${CLINIC_TODAY}
+      ) AS "nextVisit"
+    FROM patient p
+    WHERE ${caresFor(c, "$1", "p.patient_id")}
+      AND ($2 = '' OR p.first_name || ' ' || p.last_name ILIKE '%' || $2 || '%' ESCAPE '\\')
+    ORDER BY p.last_name, p.first_name, p.patient_id
+    `,
     [careKey(c), search.replace(/[\\%_]/g, (character) => `\\${character}`)]
   );
   return result.rows;
@@ -205,11 +227,17 @@ export async function getPatientAlerts(patientId: number, c: Clinician) {
     [patientId]
   );
   const missingForms = await pool.query(
-    `-- TODO D09: patient alerts: required forms not completed`,
+    `
+    SELECT f.name
+    FROM form_type f
+    WHERE f.is_required AND f.is_active
+      AND NOT EXISTS (SELECT 1 FROM form_submission s WHERE s.form_type_id = f.form_type_id AND s.patient_id = $1 AND s.status = 'Completed')
+    ORDER BY f.form_type_id
+    `,
     [patientId]
   );
   // nurses don't need insurance for care, and doctors only see the provider and status
-  const insurance = c.role === "doctor" ? await pool.query(`-- TODO D08: patient alerts: insurance provider and status`, [patientId]) : null;
+  const insurance = c.role === "doctor" ? await pool.query(`SELECT provider, status FROM insurance WHERE patient_id = $1`, [patientId]) : null;
   return {
     allergies: allergies.rows,
     ...(insurance && { insurance: insurance.rows[0] ?? null }),
@@ -231,23 +259,55 @@ async function listNursingNotes(db: Pool | PoolClient, by: "appointment" | "pati
 export async function getPatientChart(patientId: number, c: Clinician) {
   const doctor = c.role === "doctor";
   const patient = await pool.query(
-    `-- TODO X08: chart: the patient's basic info`,
+    `
+    SELECT
+      p.patient_id AS "patientId",
+      p.first_name AS "firstName",
+      p.last_name AS "lastName",
+      to_char(p.dob, 'YYYY-MM-DD') AS dob,
+      p.gender,
+      p.phone,
+      p.is_active AS "isActive"
+      ${doctor ? `, EXISTS (SELECT 1 FROM patient_doctor pd WHERE pd.patient_id = p.patient_id AND pd.doctor_id = $2 AND pd.is_active) AS "assignedToMe"` : ""}
+    FROM patient p
+    WHERE p.patient_id = $1
+    `,
     doctor ? [patientId, c.employeeId] : [patientId]
   );
   const vitals = await pool.query(
-    `-- TODO X09: chart: last 10 vitals`,
+    `SELECT ${VITALS_COLUMNS} FROM patient_vitals v JOIN employee e ON e.employee_id = v.recorded_by_employee_id
+     WHERE v.patient_id = $1 ORDER BY v.recorded_at DESC, v.vitals_id DESC LIMIT 10`,
     [patientId]
   );
   const visits = await pool.query(
-    `-- TODO X10: chart: visits`,
+    `
+    SELECT
+      a.appointment_id AS "appointmentId",
+      to_char(a.appointment_date, 'YYYY-MM-DD') AS "date",
+      to_char(ts.start_time, 'HH24:MI') AS "startTime",
+      a.doctor_id AS "doctorId",
+      e.first_name || ' ' || e.last_name AS "doctorName",
+      sp.name AS specialty,
+      a.status,
+      s.visit_reason AS "visitReason",
+      COALESCE((SELECT json_agg(d.name ORDER BY d.created_at, d.visit_diagnosis_id) FROM visit_diagnosis d WHERE d.appointment_id = a.appointment_id), '[]') AS diagnoses
+    FROM appointment a
+    JOIN time_slot ts ON ts.time_slot_id = a.time_slot_id
+    JOIN employee e ON e.employee_id = a.doctor_id
+    JOIN specialty sp ON sp.specialty_id = a.specialty_id
+    LEFT JOIN appointment_summary s ON s.appointment_id = a.appointment_id
+    WHERE a.patient_id = $1 AND a.status <> 'Cancelled'
+    ORDER BY a.appointment_date DESC, ts.start_time DESC, a.appointment_id DESC
+    `,
     [patientId]
   );
   const labOrders = await pool.query(
-    `-- TODO X11: chart: lab orders`,
+    `SELECT ${LAB_ORDER_COLUMNS} FROM lab_order l ${LAB_ORDER_JOINS} WHERE l.patient_id = $1 ORDER BY l.order_date DESC, l.lab_order_id DESC`,
     [patientId]
   );
   const prescriptions = await pool.query(
-    `-- TODO X12: chart: active prescriptions`,
+    `SELECT ${PRESCRIPTION_ITEM_COLUMNS} FROM prescription_item pi ${PRESCRIPTION_ITEM_JOINS}
+     WHERE rx.patient_id = $1 AND pi.is_active ORDER BY rx.date_prescribed DESC, pi.prescription_item_id DESC`,
     [patientId]
   );
 
@@ -264,7 +324,13 @@ export async function getPatientChart(patientId: number, c: Clinician) {
 
 async function getSummary(db: Pool | PoolClient, appointmentId: number) {
   const result = await db.query(
-    `-- TODO D05: visit: the visit summary`,
+    `
+    SELECT s.appointment_id AS "appointmentId", s.visit_reason AS "visitReason", s.notes,
+      s.recorded_by_employee_id AS "recordedById", e.first_name || ' ' || e.last_name AS "recordedBy", to_char(s.recorded_date, 'YYYY-MM-DD') AS "recordedDate"
+    FROM appointment_summary s
+    JOIN employee e ON e.employee_id = s.recorded_by_employee_id
+    WHERE s.appointment_id = $1
+    `,
     [appointmentId]
   );
   return result.rows[0] ?? null;
@@ -272,7 +338,14 @@ async function getSummary(db: Pool | PoolClient, appointmentId: number) {
 
 export async function listVisitDiagnoses(db: Pool | PoolClient, appointmentId: number) {
   const result = await db.query(
-    `-- TODO D06: visit: diagnoses at this visit`,
+    `
+    SELECT d.visit_diagnosis_id AS "visitDiagnosisId", d.name, d.reasoning,
+      d.recorded_by_employee_id AS "recordedById", e.first_name || ' ' || e.last_name AS "recordedBy", to_char(d.created_at, 'YYYY-MM-DD HH24:MI') AS "createdAt"
+    FROM visit_diagnosis d
+    JOIN employee e ON e.employee_id = d.recorded_by_employee_id
+    WHERE d.appointment_id = $1
+    ORDER BY d.created_at, d.visit_diagnosis_id
+    `,
     [appointmentId]
   );
   return result.rows;
@@ -286,7 +359,7 @@ export async function getVisitRecord(appointmentId: number) {
     [appointmentId]
   );
   const prescriptions = await pool.query(
-    `-- TODO D07: visit: prescriptions written at this visit`,
+    `SELECT ${PRESCRIPTION_ITEM_COLUMNS} FROM prescription_item pi ${PRESCRIPTION_ITEM_JOINS} WHERE rx.appointment_id = $1 ORDER BY pi.prescription_item_id`,
     [appointmentId]
   );
   return {
@@ -328,7 +401,13 @@ export async function saveVisitSummary(
   fields: { visitReason?: string | null; notes?: string | null }
 ) {
   await client.query(
-    `-- TODO D10: save the visit summary`,
+    `
+    INSERT INTO appointment_summary (appointment_id, visit_reason, notes, recorded_by_employee_id, recorded_date)
+    VALUES ($1, $2, $3, $4, ${CLINIC_TODAY})
+    ON CONFLICT (appointment_id) DO UPDATE SET
+      visit_reason = CASE WHEN $5 THEN EXCLUDED.visit_reason ELSE appointment_summary.visit_reason END,
+      notes = CASE WHEN $6 THEN EXCLUDED.notes ELSE appointment_summary.notes END
+    `,
     [appointmentId, fields.visitReason ?? null, fields.notes ?? null, employeeId, fields.visitReason !== undefined, fields.notes !== undefined]
   );
   return getSummary(client, appointmentId);

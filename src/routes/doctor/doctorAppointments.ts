@@ -127,13 +127,16 @@ doctorAppointmentsRouter.post("/api/doctor/appointments/:id/prescriptions", asyn
     if (!patient.rows[0].isActive) throw new HttpError(409, "This patient account is inactive");
 
     const created = await client.query(
-      `-- TODO D11: prescriptions: create the prescription`,
+      `INSERT INTO prescription (patient_id, prescriber_id, appointment_id, date_prescribed) VALUES ($1, $2, $3, ${CLINIC_TODAY}) RETURNING prescription_id`,
       [patientId, doctorId, appointmentId]
     );
     const prescriptionId = created.rows[0].prescription_id as number;
     for (const item of items) {
       const added = await client.query(
-        `-- TODO D12: prescriptions: add one medication line`,
+        `
+        INSERT INTO prescription_item (prescription_id, medication_id, dosage, instructions, duration_days)
+        SELECT $1, medication_id, $3, $4, $5 FROM medication WHERE medication_id = $2 AND is_active
+        `,
         [prescriptionId, item.medicationId, item.dosage, item.instructions ?? null, item.durationDays ?? null]
       );
       if (!added.rowCount) throw new HttpError(400, "Choose an active medication");
@@ -163,7 +166,12 @@ doctorAppointmentsRouter.patch("/api/doctor/prescription-items/:id/stop", async 
     // a stopped medication comes off its visit's unpaid invoice, so the billing trigger needs to know who did it
     await setBillingEmployee(client, doctorId);
     const stopped = await client.query(
-      `-- TODO D13: prescriptions: stop a prescription line I wrote`,
+      `
+      UPDATE prescription_item pi SET is_active = false
+      FROM prescription rx
+      WHERE pi.prescription_item_id = $1 AND rx.prescription_id = pi.prescription_id AND rx.prescriber_id = $2 AND pi.is_active
+      RETURNING pi.prescription_id
+      `,
       [itemId, doctorId]
     );
     if (!stopped.rowCount) {
