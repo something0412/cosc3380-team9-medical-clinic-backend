@@ -13,7 +13,7 @@ doctorDashboardRouter.get("/api/doctor/dashboard", async (req, res) => {
   const doctorId = req.user.employeeId;
 
   // get how many patients are assigned to the doctor
-  const myPatients = await pool.query(`SELECT count(*)::int AS count FROM patient_doctor WHERE doctor_id = $1 AND is_active`, [doctorId]);
+  const myPatients = await pool.query(`-- TODO D01: dashboard: count patients assigned to me`, [doctorId]);
 
   // appointments come from the booking service, so they're counted the same way as the appointment list
   const today = await listAppointments({ doctorId }, { when: "today", includeCancelled: false });
@@ -22,7 +22,7 @@ doctorDashboardRouter.get("/api/doctor/dashboard", async (req, res) => {
 
   // get how many of the doctor's lab orders are still waiting for results
   const pendingLabs = await pool.query(
-    `SELECT count(*)::int AS count FROM lab_order WHERE ordered_by_employee_id = $1 AND status IN ('Ordered', 'InProgress')`,
+    `-- TODO D02: dashboard: count my lab orders still waiting for results`,
     [doctorId]
   );
 
@@ -31,8 +31,7 @@ doctorDashboardRouter.get("/api/doctor/dashboard", async (req, res) => {
 
   // get the doctor's newest lab results
   const recentResults = await pool.query(
-    `SELECT ${LAB_ORDER_COLUMNS} FROM lab_order l ${LAB_ORDER_JOINS}
-     WHERE l.ordered_by_employee_id = $1 AND l.status = 'Completed' ORDER BY l.result_date DESC NULLS LAST, l.lab_order_id DESC LIMIT 5`,
+    `-- TODO D03: dashboard: my 5 newest finished lab results`,
     [doctorId]
   );
 

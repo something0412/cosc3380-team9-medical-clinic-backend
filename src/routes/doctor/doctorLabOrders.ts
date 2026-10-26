@@ -5,6 +5,7 @@ import { z } from "zod";
 import { CLINIC_TODAY } from "../../lib/clinicTime.js";
 import { pool } from "../../lib/db.js";
 import { withTransaction } from "../../lib/transaction.js";
+import { setBillingEmployee } from "../../services/billing.js";
 import { HttpError } from "../../middleware/errorHandler.js";
 import { LAB_ORDER_COLUMNS, LAB_ORDER_JOINS, asClinician, doctorCaresFor, lockPatientInCare } from "../../services/clinical.js";
 
@@ -33,15 +34,7 @@ const getLabOrder = async (labOrderId: number, db: Pool | PoolClient = pool) =>
 doctorLabOrdersRouter.get("/api/doctor/lab-orders", async (req, res) => {
   const { status, search } = listQuery.parse(req.query);
   const result = await pool.query(
-    `
-    SELECT ${LAB_ORDER_COLUMNS}
-    FROM lab_order l
-    ${LAB_ORDER_JOINS}
-    WHERE l.ordered_by_employee_id = $1
-      AND ($2 = 'all' OR ($2 = 'open' AND l.status IN ('Ordered', 'InProgress')) OR l.status = $2)
-      AND ($3 = '' OR p.first_name || ' ' || p.last_name ILIKE '%' || $3 || '%' ESCAPE '\\')
-    ORDER BY l.order_date DESC, l.lab_order_id DESC
-    `,
+    `-- TODO D14: lab orders I made (status filter, name search)`,
     [me(req), status, search.replace(/[\\%_]/g, (character) => `\\${character}`)]
   );
   res.json(result.rows);
@@ -49,7 +42,8 @@ doctorLabOrdersRouter.get("/api/doctor/lab-orders", async (req, res) => {
 
 // get lab tests for the order form
 doctorLabOrdersRouter.get("/api/doctor/lab-tests", async (_req, res) => {
-  const result = await pool.query(`SELECT lab_test_type_id AS "labTestTypeId", name, cost FROM lab_test_type WHERE is_active ORDER BY name`);
+  // the price comes from the admin's fee list
+  const result = await pool.query(`-- TODO D15: active lab tests with their price`);
   res.json(result.rows);
 });
 
@@ -70,6 +64,8 @@ doctorLabOrdersRouter.post("/api/doctor/lab-orders", async (req, res) => {
   const { patientId, labTestTypeId, appointmentId } = orderBody.parse(req.body);
 
   const order = await withTransaction(async (client) => {
+    // a test for an already billed visit is added to its invoice, so the billing trigger needs to know who did it
+    await setBillingEmployee(client, doctorId);
     // orders for one patient go one at a time, so the same test can't be ordered twice by accident
     await lockPatientInCare(client, asClinician(req.user, "doctor"), patientId);
 
@@ -92,11 +88,7 @@ doctorLabOrdersRouter.post("/api/doctor/lab-orders", async (req, res) => {
     if (open.rowCount) throw new HttpError(409, "This test is already ordered for the patient and doesn't have a result yet");
 
     const created = await client.query(
-      `
-      INSERT INTO lab_order (patient_id, ordered_by_employee_id, lab_test_type_id, appointment_id, status, order_date)
-      VALUES ($1, $2, $3, $4, 'Ordered', ${CLINIC_TODAY})
-      RETURNING lab_order_id
-      `,
+      `-- TODO D16: create a lab order`,
       [patientId, doctorId, labTestTypeId, appointmentId ?? null]
     );
     return getLabOrder(created.rows[0].lab_order_id, client);
@@ -110,10 +102,14 @@ doctorLabOrdersRouter.patch("/api/doctor/lab-orders/:id/cancel", async (req, res
   const labOrderId = id("a lab order").parse(req.params.id);
 
   // one conditional update, so it can't cancel an order the lab already started
-  const result = await pool.query(`UPDATE lab_order SET status = 'Cancelled' WHERE lab_order_id = $1 AND ordered_by_employee_id = $2 AND status = 'Ordered'`, [
-    labOrderId,
-    doctorId,
-  ]);
+  // a cancelled test comes off its visit's unpaid invoice, so the billing trigger needs to know who did it
+  const result = await withTransaction(async (client) => {
+    await setBillingEmployee(client, doctorId);
+    return client.query(`-- TODO D17: cancel a lab order the lab hasn't started`, [
+      labOrderId,
+      doctorId,
+    ]);
+  });
   if (!result.rowCount) {
     const current = await getLabOrder(labOrderId);
     if (!current || current.orderedById !== doctorId) throw new HttpError(404, "Lab order not found");

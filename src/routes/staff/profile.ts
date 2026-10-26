@@ -10,21 +10,7 @@ export const staffProfileRouter = Router();
 // a doctor's active weekly schedule, Monday first
 export async function getWeeklySchedule(doctorId: number) {
   const result = await pool.query(
-    `
-    SELECT
-      ds.day_of_week AS "dayOfWeek",
-      o.name AS "officeName",
-      s.name AS specialty,
-      st.name AS shift,
-      to_char(st.start_time, 'HH24:MI') AS "startTime",
-      to_char(st.end_time, 'HH24:MI') AS "endTime"
-    FROM doctor_schedule ds
-    JOIN office o ON o.office_id = ds.office_id
-    JOIN specialty s ON s.specialty_id = ds.specialty_id
-    JOIN shift_type st ON st.shift_type_id = ds.shift_type_id
-    WHERE ds.doctor_id = $1 AND ds.is_active
-    ORDER BY array_position(ARRAY['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']::varchar[], ds.day_of_week)
-    `,
+    `-- TODO D21: my active weekly schedule`,
     [doctorId]
   );
   return result.rows;
