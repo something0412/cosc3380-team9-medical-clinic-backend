@@ -60,7 +60,14 @@ receptionistBillingRouter.post("/api/receptionist/invoices/:id/payments", async 
 
   // check the invoice is for a visit at my office, and get the payment type and the patient's insurance status
   const access = await pool.query(
-    `-- TODO P28: front desk pay: check the invoice is at my office, get the payment type and insurance status`,
+    `
+    SELECT
+      (SELECT name FROM payment_type WHERE payment_type_id = $3) AS "paymentType",
+      (SELECT status FROM insurance WHERE patient_id = i.patient_id) AS "insuranceStatus"
+    FROM invoice i
+    JOIN appointment a ON a.appointment_id = i.appointment_id
+    WHERE i.invoice_id = $1 AND a.office_id = $2
+    `,
     [invoiceId, officeId, body.paymentTypeId]
   );
   if (!access.rowCount) throw new HttpError(404, "Invoice not found at your office");
