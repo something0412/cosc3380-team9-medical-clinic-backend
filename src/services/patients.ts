@@ -170,14 +170,18 @@ async function findMatches(client: PoolClient, patient: PatientInput) {
 
 async function insertPatient(client: PoolClient, patient: PatientInput) {
   const result = await client.query(
-    `-- TODO S14: register a new patient`,
+    `
+    INSERT INTO patient AS p (first_name, last_name, dob, gender, phone, email, address)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    RETURNING ${PATIENT_COLUMNS}
+    `,
     [patient.firstName, patient.lastName, patient.dob, patient.gender, patient.phone, patient.email, patient.address]
   );
   return result.rows[0];
 }
 
 export async function listPatients() {
-  const result = await pool.query(`-- TODO S13: patient directory`);
+  const result = await pool.query(`SELECT ${DIRECTORY_COLUMNS} FROM patient p ORDER BY p.patient_id`);
   return result.rows;
 }
 
@@ -262,16 +266,20 @@ export async function setPatientActive(patientId: number, isActive: boolean) {
 
 export async function getPatientProfile(patientId: number) {
   const patient = await pool.query(
-    `-- TODO S15: patient info and whether they have a login`,
+    `
+    SELECT ${PATIENT_COLUMNS}, EXISTS (SELECT 1 FROM patient_creds c WHERE c.patient_id = p.patient_id) AS "hasLogin"
+    FROM patient p
+    WHERE p.patient_id = $1
+    `,
     [patientId]
   );
   if (!patient.rowCount) return null;
 
   const contacts = await pool.query(
-    `-- TODO S17: the patient's active emergency contacts`,
+    `SELECT ${CONTACT_COLUMNS} FROM emergency_contact WHERE patient_id = $1 AND is_active ORDER BY is_primary DESC, emergency_contact_id`,
     [patientId]
   );
-  const insurance = await pool.query(`-- TODO S16: the patient's insurance`, [patientId]);
+  const insurance = await pool.query(`SELECT ${INSURANCE_COLUMNS} FROM insurance WHERE patient_id = $1`, [patientId]);
 
   return { ...patient.rows[0], emergencyContacts: contacts.rows, insurance: insurance.rows[0] ?? null };
 }
@@ -286,7 +294,12 @@ export async function updateContactInfo(patientId: number, info: ContactInfo & {
       }
 
       const updated = await client.query(
-        `-- TODO S20: update the patient's contact info`,
+        `
+        UPDATE patient p
+        SET phone = $1, address = $2, gender = $3, email = COALESCE($4, p.email)
+        WHERE p.patient_id = $5
+        RETURNING p.patient_id AS "patientId", p.phone, p.email, p.address, p.gender
+        `,
         [info.phone, info.address, info.gender, info.email ?? null, patientId]
       );
       if (!updated.rowCount) throw new HttpError(404, "Patient not found");
@@ -305,11 +318,15 @@ export async function addEmergencyContact(patientId: number, contact: EmergencyC
   return withTransaction(async (client) => {
     await lockPatient(client, patientId);
     if (contact.isPrimary) {
-      await client.query(`-- TODO S24: emergency contacts: take primary off the other contacts`, [patientId]);
+      await client.query(`UPDATE emergency_contact SET is_primary = false WHERE patient_id = $1 AND is_primary`, [patientId]);
     }
 
     const inserted = await client.query(
-      `-- TODO S25: emergency contacts: add a contact`,
+      `
+      INSERT INTO emergency_contact (patient_id, first_name, last_name, relationship, phone_number, is_primary)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING ${CONTACT_COLUMNS}
+      `,
       [patientId, contact.firstName, contact.lastName, contact.relationship, contact.phoneNumber, contact.isPrimary]
     );
     return inserted.rows[0];
@@ -355,14 +372,20 @@ export async function saveInsurance(patientId: number, insurance: Insurance) {
   try {
     return await withTransaction(async (client) => {
       await lockPatient(client, patientId);
-      const taken = await client.query(`-- TODO S21: insurance: check no other patient has this policy number`, [
+      const taken = await client.query(`SELECT 1 FROM insurance WHERE policy_number = $1 AND patient_id <> $2`, [
         insurance.policyNumber,
         patientId,
       ]);
       if (taken.rowCount) throw new HttpError(409, POLICY_TAKEN);
 
       const saved = await client.query(
-        `-- TODO S22: insurance: add or replace the patient's insurance`,
+        `
+        INSERT INTO insurance (patient_id, provider, policy_number, status)
+        VALUES ($1, $2, $3, 'Pending')
+        ON CONFLICT (patient_id) DO UPDATE
+        SET provider = EXCLUDED.provider, policy_number = EXCLUDED.policy_number, status = 'Pending'
+        RETURNING ${INSURANCE_COLUMNS}
+        `,
         [patientId, insurance.provider, insurance.policyNumber]
       );
       return saved.rows[0];
@@ -380,7 +403,7 @@ export async function setInsuranceStatus(patientId: number, review: z.infer<type
   const updated = await withTransaction(async (client) => {
     await client.query(`SELECT set_config('app.employee_id', $1, true)`, [String(employeeId)]);
     return client.query(
-      `-- TODO S23: insurance: verify or deny`,
+      `UPDATE insurance SET status = $1 WHERE patient_id = $2 AND provider = $3 AND policy_number = $4 RETURNING ${INSURANCE_COLUMNS}`,
       [review.status, patientId, review.provider, review.policyNumber]
     );
   });
