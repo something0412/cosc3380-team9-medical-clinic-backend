@@ -27,7 +27,7 @@ adminReportsRouter.get("/dashboard", async (req, res) => {
 
   const money = await pool.query(`
     SELECT
-      (SELECT COALESCE(sum(amount_paid), 0) FROM payment)::float AS collected,
+      (SELECT COALESCE(sum(amount_paid), 0) FROM payment WHERE status <> 'Refunded')::float AS collected,
       (SELECT COALESCE(sum(b.balance), 0) FROM (${INVOICE_BALANCES}) b)::float AS pending
   `);
 
@@ -100,9 +100,9 @@ adminReportsRouter.get("/analytics/billing", async (req, res) => {
 
   const summary = await pool.query(`
     SELECT
-      (SELECT COALESCE(sum(amount), 0) FROM invoice)::float AS billed,
-      (SELECT COALESCE(sum(amount_paid), 0) FROM payment)::float AS collected,
-      (SELECT count(*) FROM invoice)::int AS "invoiceCount",
+      (SELECT COALESCE(sum(amount), 0) FROM invoice WHERE status <> 'Void')::float AS billed,
+      (SELECT COALESCE(sum(amount_paid), 0) FROM payment WHERE status <> 'Refunded')::float AS collected,
+      (SELECT count(*) FROM invoice WHERE status <> 'Void')::int AS "invoiceCount",
       (SELECT count(*) FROM invoice WHERE status = 'Paid')::int AS "paidCount",
       (SELECT count(*) FROM invoice WHERE status = 'Pending')::int AS "pendingCount",
       (SELECT count(*) FROM invoice WHERE status = 'Overdue')::int AS "overdueCount"
@@ -120,9 +120,9 @@ adminReportsRouter.get("/analytics/billing", async (req, res) => {
     SELECT
       m.month,
       (SELECT COALESCE(sum(amount), 0) FROM invoice
-        WHERE EXTRACT(YEAR FROM issue_date) = $1 AND EXTRACT(MONTH FROM issue_date) = m.month)::float AS billed,
+        WHERE status <> 'Void' AND EXTRACT(YEAR FROM issue_date) = $1 AND EXTRACT(MONTH FROM issue_date) = m.month)::float AS billed,
       (SELECT COALESCE(sum(amount_paid), 0) FROM payment
-        WHERE EXTRACT(YEAR FROM payment_date) = $1 AND EXTRACT(MONTH FROM payment_date) = m.month)::float AS collected
+        WHERE status <> 'Refunded' AND EXTRACT(YEAR FROM payment_date) = $1 AND EXTRACT(MONTH FROM payment_date) = m.month)::float AS collected
     FROM generate_series(1, 12) AS m(month)
     ORDER BY m.month
     `,
@@ -132,7 +132,7 @@ adminReportsRouter.get("/analytics/billing", async (req, res) => {
   const byPaymentType = await pool.query(`
     SELECT t.name AS "paymentType", count(p.payment_id)::int AS payments, COALESCE(sum(p.amount_paid), 0)::float AS amount
     FROM payment_type t
-    LEFT JOIN payment p ON p.payment_type_id = t.payment_type_id
+    LEFT JOIN payment p ON p.payment_type_id = t.payment_type_id AND p.status <> 'Refunded'
     WHERE t.is_active
     GROUP BY t.payment_type_id, t.name
     ORDER BY amount DESC
