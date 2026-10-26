@@ -24,11 +24,11 @@ patientPaymentsRouter.post("/api/patient/:id/invoices/:invoiceId/payments", asyn
     await client.query(`SELECT set_config('app.patient_id', $1, true), set_config('app.employee_id', '', true)`, [String(patientId)]);
 
     // lock my invoice so two payments at once can't pay more than it owes
-    const mine = await client.query(`-- TODO P21: patient pay: lock my invoice and get its status`, [invoiceId, patientId]);
+    const mine = await client.query(`SELECT status FROM invoice WHERE invoice_id = $1 AND patient_id = $2 FOR NO KEY UPDATE`, [invoiceId, patientId]);
     if (!mine.rowCount || mine.rows[0].status === "Void") throw new HttpError(404, "Invoice not found");
 
     // get what's left on the invoice
-    const owed = await client.query(`-- TODO P22: patient pay: what's left on the invoice and whether the amount is too much`, [
+    const owed = await client.query(`SELECT b.balance, $2::numeric > b.balance AS "tooMuch" FROM (${INVOICE_BALANCES}) b WHERE b.invoice_id = $1`, [
       invoiceId,
       card.amount,
     ]);
@@ -37,7 +37,10 @@ patientPaymentsRouter.post("/api/patient/:id/invoices/:invoiceId/payments", asyn
 
     // save the payment (no card details), with no employee since I paid online
     await client.query(
-      `-- TODO P23: patient pay: save the card payment`,
+      `
+      INSERT INTO payment (invoice_id, payment_type_id, handled_by, amount_paid, payment_date, status)
+      SELECT $1, payment_type_id, NULL, $2, ${CLINIC_TODAY}, 'Completed' FROM payment_type WHERE name = $3 AND is_active
+      `,
       [invoiceId, card.amount, card.cardType]
     );
     return getInvoice(invoiceId, client);

@@ -52,7 +52,70 @@ export interface Booking {
 // overlaps compare clock times because slots in different shifts can share a time
 async function checkSlots(db: Pool | PoolClient, search: SlotSearch): Promise<CheckedSlot[]> {
   const result = await db.query(
-    `-- TODO P07: doctor time slots on a date, flagged when taken, past, or the patient is busy, with a usable referral`,
+    `
+    SELECT
+      to_char(d.day, 'YYYY-MM-DD') AS "date",
+      ds.doctor_id AS "doctorId",
+      e.first_name || ' ' || e.last_name AS "doctorName",
+      o.office_id AS "officeId",
+      o.name AS "officeName",
+      sp.specialty_id AS "specialtyId",
+      sp.name AS "specialty",
+      sp.requires_referral AS "requiresReferral",
+      ts.time_slot_id AS "timeSlotId",
+      to_char(ts.start_time, 'HH24:MI') AS "startTime",
+      to_char(ts.end_time, 'HH24:MI') AS "endTime",
+      d.day + ts.start_time <= ${CLINIC_NOW} AS "started",
+      EXISTS (
+        SELECT 1
+        FROM appointment a
+        JOIN time_slot t ON t.time_slot_id = a.time_slot_id
+        WHERE a.doctor_id = ds.doctor_id
+          AND a.appointment_date = d.day
+          AND a.status <> 'Cancelled'
+          AND t.start_time < ts.end_time
+          AND t.end_time > ts.start_time
+      ) AS "doctorBusy",
+      EXISTS (
+        SELECT 1
+        FROM appointment a
+        JOIN time_slot t ON t.time_slot_id = a.time_slot_id
+        WHERE a.patient_id = $6::int
+          AND a.appointment_date = d.day
+          AND a.status <> 'Cancelled'
+          AND t.start_time < ts.end_time
+          AND t.end_time > ts.start_time
+      ) AS "patientBusy",
+      (
+        SELECT r.referral_id
+        FROM referral r
+        WHERE r.patient_id = $6::int
+          AND r.specialist_doctor_id = ds.doctor_id
+          AND r.specialty_id = ds.specialty_id
+          AND r.status = 'Approved'
+          AND r.date_issued <= d.day
+          AND r.expiration_date >= d.day
+          AND ($8::int IS NULL OR r.referral_id = $8)
+        ORDER BY r.expiration_date DESC, r.referral_id
+        LIMIT 1
+      ) AS "referralId"
+    FROM (SELECT generate_series($1::date, $1::date + $2::int - 1, interval '1 day')::date AS day) d
+    JOIN doctor_schedule ds ON ds.day_of_week = to_char(d.day, 'FMDay') AND ds.is_active
+    JOIN employee e ON e.employee_id = ds.doctor_id AND e.is_active
+    JOIN doctor_specialty dsp ON dsp.doctor_id = ds.doctor_id AND dsp.specialty_id = ds.specialty_id AND dsp.is_active
+    JOIN specialty sp ON sp.specialty_id = ds.specialty_id AND sp.is_active
+    JOIN office o ON o.office_id = ds.office_id AND o.is_active
+    JOIN shift_type st ON st.shift_type_id = ds.shift_type_id AND st.is_active
+    JOIN time_slot ts ON ts.shift_type_id = st.shift_type_id
+      AND ts.is_active
+      AND ts.start_time >= st.start_time
+      AND ts.end_time <= st.end_time
+    WHERE ($3::int IS NULL OR ds.doctor_id = $3)
+      AND ($4::int IS NULL OR ds.specialty_id = $4)
+      AND ($5::int IS NULL OR ds.office_id = $5)
+      AND ($7::int IS NULL OR ts.time_slot_id = $7)
+    ORDER BY d.day, ts.start_time, e.last_name, e.first_name, ds.doctor_id
+    `,
     [
       search.date,
       search.days ?? 1,
@@ -144,7 +207,23 @@ export interface AppointmentListFilter {
 export async function listAppointments(scope: { officeId: number } | { doctorId: number } | { patientId: number }, filter: AppointmentListFilter = {}) {
   const when = filter.date ? null : (filter.when ?? "today");
   const result = await pool.query(
-    `-- TODO P04: list appointments for one office, doctor or patient`,
+    `
+    SELECT ${VISIT_COLUMNS}
+    FROM appointment a
+    ${APPOINTMENT_JOINS}
+    WHERE ($1::int IS NULL OR a.office_id = $1)
+      AND ($2::int IS NULL OR a.doctor_id = $2)
+      AND ($3::date IS NULL OR a.appointment_date = $3)
+      AND ($4::text IS NULL
+        OR ($4 = 'today' AND a.appointment_date = ${CLINIC_TODAY})
+        OR ($4 = 'upcoming' AND a.appointment_date > ${CLINIC_TODAY})
+        OR ($4 = 'past' AND a.appointment_date < ${CLINIC_TODAY})
+        OR $4 = 'all')
+      AND ($5 = '' OR p.first_name || ' ' || p.last_name ILIKE '%' || $5 || '%' ESCAPE '\\')
+      AND ($6 OR a.status <> 'Cancelled')
+      AND ($7::int IS NULL OR a.patient_id = $7)
+    ORDER BY CASE WHEN $4 IN ('past', 'all') THEN a.appointment_date END DESC, a.appointment_date, ts.start_time, a.appointment_id
+    `,
     [
       "officeId" in scope ? scope.officeId : null,
       "doctorId" in scope ? scope.doctorId : null,
@@ -219,7 +298,15 @@ async function changeVisit(appointmentId: number, officeId: number, employeeId: 
     // the appointment history trigger records who made the change
     await client.query(`SELECT set_config('app.employee_id', $1, true)`, [String(employeeId)]);
     const result = await client.query(
-      `-- TODO P29: change a visit at my office (No Show, also check in and check out)`,
+      `
+      UPDATE appointment a
+      SET ${set}
+      FROM time_slot ts
+      WHERE a.appointment_id = $1
+        AND a.office_id = $2
+        AND ts.time_slot_id = a.time_slot_id
+        AND ${allowed}
+      `,
       [appointmentId, officeId]
     );
     return result.rowCount;
@@ -237,7 +324,7 @@ export async function bookAppointment(booking: Booking) {
   try {
     return await withTransaction(async (client) => {
       // same lock order every time so two bookings can't deadlock
-      const patient = await client.query(`-- TODO P08: booking: check the patient exists and is active`, [
+      const patient = await client.query(`SELECT is_active AS "isActive" FROM patient WHERE patient_id = $1 FOR NO KEY UPDATE`, [
         booking.patientId,
       ]);
       if (!patient.rowCount) throw new HttpError(404, "Patient not found");
@@ -245,7 +332,7 @@ export async function bookAppointment(booking: Booking) {
 
       await client.query(`SELECT 1 FROM employee WHERE employee_id = $1 FOR SHARE`, [booking.doctorId]);
       const schedule = await client.query(
-        `-- TODO P09: booking: the doctor's schedule for that weekday`,
+        `SELECT shift_type_id AS "shiftTypeId" FROM doctor_schedule WHERE doctor_id = $1 AND day_of_week = to_char($2::date, 'FMDay') FOR UPDATE`,
         [booking.doctorId, booking.date]
       );
       if (schedule.rowCount) {
@@ -281,7 +368,14 @@ export async function bookAppointment(booking: Booking) {
       }
 
       const inserted = await client.query(
-        `-- TODO P10: booking: create the appointment`,
+        `
+        INSERT INTO appointment (
+          patient_id, doctor_id, office_id, referral_id, appointment_date,
+          time_slot_id, specialty_id, status, booking_channel, booked_by_employee_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'Scheduled', $8, $9)
+        RETURNING appointment_id AS "appointmentId"
+        `,
         [
           booking.patientId,
           slot.doctorId,
@@ -307,7 +401,18 @@ export async function bookAppointment(booking: Booking) {
 export async function cancelAppointment(appointmentId: number, scope: { patientId?: number; officeId?: number }) {
   // one conditional update so a check in can't land between the check and the write
   const result = await pool.query(
-    `-- TODO P05: cancel a scheduled appointment`,
+    `
+    UPDATE appointment a
+    SET status = 'Cancelled'
+    FROM time_slot ts
+    WHERE a.appointment_id = $1
+      AND ts.time_slot_id = a.time_slot_id
+      AND ($2::int IS NULL OR a.patient_id = $2)
+      AND ($3::int IS NULL OR a.office_id = $3)
+      AND a.status = 'Scheduled'
+      AND a.checked_in_at IS NULL
+      AND a.appointment_date + ts.start_time > ${CLINIC_NOW}
+    `,
     [appointmentId, scope.patientId ?? null, scope.officeId ?? null]
   );
 
