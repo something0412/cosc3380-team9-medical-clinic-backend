@@ -52,23 +52,7 @@ const OFFICE_COLUMNS = `
 // active doctors, or one doctor when an ID is given
 async function loadDoctors(doctorId: number | null) {
   const result = await pool.query(
-    `
-    ${ACTIVE_SCHEDULES}
-    SELECT
-      e.employee_id AS "doctorId",
-      e.first_name AS "firstName",
-      e.last_name AS "lastName",
-      ${DOCTOR_SPECIALTIES} AS specialties,
-      COALESCE((
-        SELECT json_agg(json_build_object('officeId', o.office_id, 'name', o.name) ORDER BY o.name)
-        FROM office o
-        WHERE o.office_id IN (SELECT a.office_id FROM active_schedule a WHERE a.doctor_id = e.employee_id)
-      ), '[]') AS offices
-    FROM doctor d
-    JOIN employee e ON e.employee_id = d.employee_id
-    WHERE e.is_active AND ($1::int IS NULL OR e.employee_id = $1)
-    ORDER BY e.last_name, e.first_name
-    `,
+    `-- TODO P06: active doctors with their specialties and offices (booking doctor list)`,
     [doctorId]
   );
   return result.rows;
@@ -172,12 +156,14 @@ const availabilityQuery = z.object({
   days: z.coerce.number().int().min(1).max(14, "Search up to 14 days at a time").default(1),
   doctorId: idParam.optional(),
   officeId: idParam.optional(),
+  // true also sends taken times (available: false) so the page can gray them out
+  includeTaken: z.enum(["true", "false"]).optional(),
 });
 
 // open appointment times for visitors, searched without any patient or session
 publicRouter.get("/availability", async (req, res) => {
-  const { specialtyId, date, days, doctorId, officeId } = availabilityQuery.parse(req.query);
-  const slots = await findAvailability({ specialtyId, date, days, doctorId, officeId });
+  const { specialtyId, date, days, doctorId, officeId, includeTaken } = availabilityQuery.parse(req.query);
+  const slots = await findAvailability({ specialtyId, date, days, doctorId, officeId }, includeTaken === "true");
 
   // only public fields, so a referral ID never reaches a visitor
   res.json(
@@ -193,6 +179,8 @@ publicRouter.get("/availability", async (req, res) => {
       timeSlotId: slot.timeSlotId,
       startTime: slot.startTime,
       endTime: slot.endTime,
+      available: slot.available,
+      unavailableReason: slot.unavailableReason,
     }))
   );
 });
