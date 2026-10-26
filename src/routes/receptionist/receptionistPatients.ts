@@ -38,13 +38,48 @@ receptionistPatientsRouter.get("/api/receptionist/patients/:id", async (req, res
 
   // get every active form and whether the patient completed it
   const forms = await pool.query(
-    `-- TODO S18: patient detail: every active form and whether it's completed`,
+    `
+    SELECT
+      f.form_type_id AS "formTypeId",
+      f.name,
+      f.is_required AS "isRequired",
+      done.submitted_date IS NOT NULL AS completed,
+      to_char(done.submitted_date, 'YYYY-MM-DD') AS "completedDate"
+    FROM form_type f
+    LEFT JOIN LATERAL (
+      SELECT s.submitted_date
+      FROM form_submission s
+      WHERE s.form_type_id = f.form_type_id AND s.patient_id = $1 AND s.status = 'Completed'
+      ORDER BY s.submitted_date DESC
+      LIMIT 1
+    ) done ON true
+    WHERE f.is_active
+    ORDER BY f.form_type_id
+    `,
     [patientId]
   );
 
   // get the patient's 10 newest appointments at any office
   const appointments = await pool.query(
-    `-- TODO S19: patient detail: 10 newest appointments`,
+    `
+    SELECT
+      a.appointment_id AS "appointmentId",
+      to_char(a.appointment_date, 'YYYY-MM-DD') AS "date",
+      to_char(ts.start_time, 'HH24:MI') AS "startTime",
+      to_char(ts.end_time, 'HH24:MI') AS "endTime",
+      e.first_name || ' ' || e.last_name AS "doctorName",
+      o.name AS "officeName",
+      sp.name AS "specialty",
+      a.status
+    FROM appointment a
+    JOIN time_slot ts ON ts.time_slot_id = a.time_slot_id
+    JOIN employee e ON e.employee_id = a.doctor_id
+    JOIN office o ON o.office_id = a.office_id
+    JOIN specialty sp ON sp.specialty_id = a.specialty_id
+    WHERE a.patient_id = $1
+    ORDER BY a.appointment_date DESC, ts.start_time DESC, a.appointment_id DESC
+    LIMIT 10
+    `,
     [patientId]
   );
 
