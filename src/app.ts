@@ -1,5 +1,6 @@
 import cors from "cors";
 import express from "express";
+import type { RequestHandler } from "express";
 import * as helmetModule from "helmet";
 import morgan from "morgan";
 import session from "express-session";
@@ -37,7 +38,9 @@ export const app = express();
 // proxy for Vercel
 app.set("trust proxy", 1);
 
-app.use(helmetModule.default());
+// security headers; Vercel's build reads helmet's types differently, so say what the helmet function is
+const helmet = (helmetModule as unknown as { default: () => RequestHandler }).default;
+app.use(helmet());
 
 app.use(cors({
   origin: process.env.FRONTEND_URL ?? "http://localhost:5173",
