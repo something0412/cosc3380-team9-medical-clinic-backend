@@ -1,6 +1,7 @@
 import cors from "cors";
 import express from "express";
-import helmet from "helmet";
+import type { RequestHandler } from "express";
+import * as helmetModule from "helmet";
 import morgan from "morgan";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
@@ -34,9 +35,11 @@ import { staffProfileRouter } from "./routes/staff/profile.js";
 
 export const app = express();
 
-// on Vercel, requests come through its proxy, so trust it to know the request was https (for secure cookies)
+// proxy for Vercel
 app.set("trust proxy", 1);
 
+// security headers; Vercel's build reads helmet's types differently, so say what the helmet function is
+const helmet = (helmetModule as unknown as { default: () => RequestHandler }).default;
 app.use(helmet());
 
 app.use(cors({
@@ -54,8 +57,6 @@ if (process.env.NODE_ENV === "production" && !process.env.SESSION_SECRET) {
   throw new Error("SESSION_SECRET is required in production");
 }
 
-// logins are saved in the session table (migration 015), so they survive restarts and every copy of the backend sees them
-// tests keep them in memory, since the test database doesn't have that table
 const PgSession = connectPgSimple(session);
 const store = process.env.NODE_ENV === "test" ? undefined : new PgSession({ pool, tableName: "session" });
 
@@ -75,7 +76,6 @@ app.use(session({
 // deactivated or deleted accounts lose their session before any route sees it
 app.use(loadSessionUser);
 
-// only the logged in patient can use their patient portal
 app.use("/api/patient/:id", (req, res, next) => {
   if (req.user?.role !== "patient") {
     res.status(401).json({ error: "Patient login required" });
@@ -88,7 +88,6 @@ app.use("/api/patient/:id", (req, res, next) => {
   next();
 });
 
-// only the logged in employee can use their staff profile
 app.use("/api/staff/:id", (req, res, next) => {
   if (!req.user || req.user.role === "patient") {
     res.status(401).json({ error: "Staff login required" });
@@ -101,7 +100,6 @@ app.use("/api/staff/:id", (req, res, next) => {
   next();
 });
 
-// the patient list and registration are for receptionists only
 app.use("/api/patients", (req, res, next) => {
   if (!req.user || req.user.role === "patient") {
     res.status(401).json({ error: "Staff login required" });
@@ -114,16 +112,11 @@ app.use("/api/patients", (req, res, next) => {
   next();
 });
 
-// doctor portal: doctors only
+// required specific roles
+app.use("/api/admin", requireRole("admin"), adminRouter);
 app.use("/api/doctor", requireRole("doctor"));
-
-// lab portal: lab technicians only
 app.use("/api/lab", requireRole("lab"));
-
-// nurse portal: nurses only
 app.use("/api/nurse", requireStaffType("nurse"));
-
-// receptionist portal: receptionists only
 app.use("/api/receptionist", requireStaffType("receptionist"));
 
 app.use(authRouter);
@@ -149,9 +142,6 @@ app.use("/api/public", publicRouter);
 
 // appointment booking for patients and receptionists, checked in each route
 app.use(bookingRouter);
-
-// the admin portal is for admins only
-app.use("/api/admin", requireRole("admin"), adminRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);
