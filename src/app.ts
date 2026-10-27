@@ -3,8 +3,10 @@ import express from "express";
 import helmet from "helmet";
 import morgan from "morgan";
 import session from "express-session";
+import connectPgSimple from "connect-pg-simple";
 import { randomBytes } from "node:crypto";
 
+import { pool } from "./lib/db.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { requireRole, requireStaffType } from "./middleware/requireRole.js";
 import { loadSessionUser } from "./middleware/sessionUser.js";
@@ -32,6 +34,9 @@ import { staffProfileRouter } from "./routes/staff/profile.js";
 
 export const app = express();
 
+// on Vercel, requests come through its proxy, so trust it to know the request was https (for secure cookies)
+app.set("trust proxy", 1);
+
 app.use(helmet());
 
 app.use(cors({
@@ -49,7 +54,13 @@ if (process.env.NODE_ENV === "production" && !process.env.SESSION_SECRET) {
   throw new Error("SESSION_SECRET is required in production");
 }
 
+// logins are saved in the session table (migration 015), so they survive restarts and every copy of the backend sees them
+// tests keep them in memory, since the test database doesn't have that table
+const PgSession = connectPgSimple(session);
+const store = process.env.NODE_ENV === "test" ? undefined : new PgSession({ pool, tableName: "session" });
+
 app.use(session({
+  store,
   secret,
   resave: false,
   saveUninitialized: false,
@@ -144,3 +155,6 @@ app.use("/api/admin", requireRole("admin"), adminRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);
+
+// Vercel looks for the Express app as this file's default export
+export default app;
