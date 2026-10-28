@@ -1,9 +1,7 @@
--- allow at most one invoice for each appointment
--- waiting for review, so it hasn't been run on Supabase yet
+-- at most one invoice per appointment
 
 BEGIN;
 
--- stop without changing anything if some appointment already has two invoices
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM invoice GROUP BY appointment_id HAVING count(*) > 1) THEN

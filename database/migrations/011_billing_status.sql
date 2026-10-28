@@ -1,34 +1,19 @@
--- Billing status and history:
---   payments get a status: Completed, Requested (refund asked for) or Refunded
---   invoices can be voided
---   billing_history records every invoice and payment change, who made it and when
---   appointment_history also records check in, check out, and who did it
---
--- Every invoice or payment change must say which employee made it, in the same transaction:
---   SELECT set_config('app.employee_id', '<employee id>', true);
---   SELECT set_config('app.reason', '<why>', true);   -- optional
--- Seed scripts and fixes in the SQL editor use the admin's ID (1017), for example:
---   BEGIN; SELECT set_config('app.employee_id', '1017', true); ...your changes...; COMMIT;
---
--- waiting for review, so it hasn't been run on Supabase yet
+-- billing: payment status (Completed / Requested / Refunded), Void invoices, and billing_history
+-- every invoice or payment change must set app.employee_id in the same transaction (SQL editor fixes use 1017)
 
 BEGIN;
 
--- invoices can be voided
 ALTER TABLE public.invoice DROP CONSTRAINT chk_invoice_status;
 ALTER TABLE public.invoice ADD CONSTRAINT chk_invoice_status
   CHECK (status IN ('Pending', 'Paid', 'Overdue', 'Void'));
 
--- one invoice per visit, not counting voided ones, so a voided visit can be billed again
 ALTER TABLE public.invoice DROP CONSTRAINT IF EXISTS invoice_appointment_id_key;
 CREATE UNIQUE INDEX invoice_one_per_appointment ON public.invoice (appointment_id) WHERE status <> 'Void';
 
--- payment status, existing payments are Completed
 ALTER TABLE public.payment ADD COLUMN status character varying(20) DEFAULT 'Completed' NOT NULL;
 ALTER TABLE public.payment ADD CONSTRAINT chk_payment_status
   CHECK (status IN ('Completed', 'Requested', 'Refunded'));
 
--- no foreign keys, so the history stays even if a row is ever removed
 CREATE TABLE public.billing_history (
     history_id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     invoice_id integer NOT NULL,
@@ -43,11 +28,8 @@ CREATE TABLE public.billing_history (
 CREATE INDEX idx_billing_history_invoice ON public.billing_history (invoice_id, changed_at);
 CREATE INDEX idx_billing_history_payment ON public.billing_history (payment_id, changed_at);
 
--- like every other table, so Supabase's public API roles can't read or change it
 ALTER TABLE public.billing_history ENABLE ROW LEVEL SECURITY;
 
--- Supabase also grants those roles access to new tables, so take it back.
--- The loop skips roles that only exist on Supabase.
 DO $$
 DECLARE
     api_role text;
@@ -58,7 +40,7 @@ BEGIN
 END;
 $$;
 
--- the employee making a billing change, refuses the change when there isn't one
+-- the employee making the change; refuses the change when there isn't one
 CREATE OR REPLACE FUNCTION public.billing_employee_id() RETURNS integer
 LANGUAGE plpgsql
 SET search_path = ''
@@ -76,7 +58,7 @@ BEGIN
 END;
 $$;
 
--- invoices: allowed changes
+-- invoices can't be deleted or changed once Void, and are voided only after every refund
 CREATE OR REPLACE FUNCTION public.check_invoice_change() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -111,7 +93,7 @@ CREATE OR REPLACE TRIGGER invoice_check_trigger
     BEFORE INSERT OR UPDATE OR DELETE ON public.invoice
     FOR EACH ROW EXECUTE FUNCTION public.check_invoice_change();
 
--- invoices: record new invoices and status changes
+-- records new invoices and status changes
 CREATE OR REPLACE FUNCTION public.record_invoice_change() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -135,11 +117,7 @@ CREATE OR REPLACE TRIGGER invoice_history_trigger
     AFTER INSERT OR UPDATE ON public.invoice
     FOR EACH ROW EXECUTE FUNCTION public.record_invoice_change();
 
--- payments: allowed changes
---   new payment -> Completed
---   Completed -> Requested (refund asked for)
---   Requested -> Completed (request cancelled or denied)
---   Requested -> Refunded (refund approved), and Refunded is final
+-- payments go Completed -> Requested -> Completed or Refunded, and can't be deleted
 CREATE OR REPLACE FUNCTION public.check_payment_change() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -181,7 +159,7 @@ CREATE OR REPLACE TRIGGER payment_check_trigger
     BEFORE INSERT OR UPDATE OR DELETE ON public.payment
     FOR EACH ROW EXECUTE FUNCTION public.check_payment_change();
 
--- payments: record the change, then keep the invoice Paid or Pending to match what's still paid
+-- records the change, then sets the invoice Paid or Pending to match what's still paid
 CREATE OR REPLACE FUNCTION public.record_payment_change() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -202,7 +180,6 @@ BEGIN
         public.billing_employee_id(), NULLIF(current_setting('app.reason', true), '')
     );
 
-    -- refunded payments don't count, payments waiting on a refund still do
     SELECT amount, status INTO invoice_amount, invoice_status FROM public.invoice WHERE invoice_id = NEW.invoice_id;
     SELECT COALESCE(sum(amount_paid), 0) INTO still_paid
     FROM public.payment WHERE invoice_id = NEW.invoice_id AND status <> 'Refunded';
@@ -220,18 +197,16 @@ CREATE OR REPLACE TRIGGER payment_history_trigger
     AFTER INSERT OR UPDATE ON public.payment
     FOR EACH ROW EXECUTE FUNCTION public.record_payment_change();
 
--- appointment history: also record check in, check out, and the employee who made the change
--- patients booking or cancelling online leave changed_by empty
 ALTER TABLE public.appointment_history ADD COLUMN changed_by integer;
 ALTER TABLE public.appointment_history ADD COLUMN checked_in_at timestamp with time zone;
 ALTER TABLE public.appointment_history ADD COLUMN checked_out_at timestamp with time zone;
 
+-- also records check in, check out and the employee who made the change
 CREATE OR REPLACE FUNCTION public.record_appointment_history() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
 AS $$
 BEGIN
-    -- updates that leave every tracked column alone aren't recorded
     IF TG_OP = 'UPDATE'
        AND OLD.status IS NOT DISTINCT FROM NEW.status
        AND OLD.appointment_date IS NOT DISTINCT FROM NEW.appointment_date

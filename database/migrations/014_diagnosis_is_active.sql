@@ -1,6 +1,4 @@
--- lets a doctor remove a diagnosis added by mistake
--- removed diagnoses stay in the table as inactive, like allergies and home medications
--- waiting for review, so it hasn't been run on Supabase yet
+-- visit_diagnosis.is_active: removed diagnoses stay in the table as inactive
 
 BEGIN;
 

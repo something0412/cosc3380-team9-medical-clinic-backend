@@ -1,5 +1,4 @@
--- nursing notes for a visit, kept apart from the doctor's visit summary so neither overwrites the other
--- waiting for review, so it hasn't been run on Supabase yet
+-- nursing_note: nurses' notes for a visit, kept apart from the doctor's visit summary
 
 BEGIN;
 
@@ -14,11 +13,8 @@ CREATE TABLE public.nursing_note (
 
 CREATE INDEX idx_nursing_note_appointment ON public.nursing_note (appointment_id);
 
--- like every other table, so Supabase's public API roles can't read or change it
 ALTER TABLE public.nursing_note ENABLE ROW LEVEL SECURITY;
 
--- Supabase also grants those roles access to new tables, so take it back.
--- The loop skips roles that only exist on Supabase.
 DO $$
 DECLARE
     api_role text;

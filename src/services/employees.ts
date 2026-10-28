@@ -39,7 +39,7 @@ export const employeeSchema = z.object({
   lastName: text("Last name", 50),
   dob: date("Date of birth").refine((d) => d < new Date().toISOString().slice(0, 10), "Date of birth must be in the past"),
   email: z.email("Enter a valid email").trim().toLowerCase().max(100, "Email must be 100 characters or less"),
-  phone: text("Phone", 20),
+  phone: z.string("Phone is required").trim().regex(/^\d{10}$/, "Phone must be exactly 10 digits"),
   employeeTypeId: z.number("Select a role").int().positive(),
   officeId: z.number("Select an office").int().positive(),
   doctor: doctorSchema.nullish(),

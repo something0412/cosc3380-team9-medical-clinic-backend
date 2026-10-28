@@ -23,7 +23,18 @@ patientProfileRouter.get("/api/patient/:id/profile", async (req, res) => {
   const patientId = idParam.parse(req.params.id);
   const profile = await getPatientProfile(patientId);
   if (!profile) throw new HttpError(404, "Patient not found");
-  res.json(profile);
+
+  // my primary doctor, or null
+  const primary = await pool.query(
+    `
+    SELECT pd.doctor_id AS "doctorId", e.first_name || ' ' || e.last_name AS name
+    FROM patient_doctor pd
+    JOIN employee e ON e.employee_id = pd.doctor_id
+    WHERE pd.patient_id = $1 AND pd.is_primary AND pd.is_active
+    `,
+    [patientId]
+  );
+  res.json({ ...profile, primaryDoctor: primary.rows[0] ?? null });
 });
 
 // update contact info

@@ -24,6 +24,9 @@ const contactEmail = z
   .preprocess(blankToNull, z.email("Enter a valid email address").toLowerCase().max(100, "Email must be 100 characters or less").nullish())
   .transform((value) => value ?? null);
 
+// phone numbers are digits only, exactly 10
+const phone = z.string("Phone is required").trim().regex(/^\d{10}$/, "Phone must be exactly 10 digits");
+
 const newPassword = z.string("Password is required").min(8, "Password must be at least 8 characters");
 
 // today's date at the clinic as YYYY-MM-DD
@@ -40,7 +43,7 @@ export const patientSchema = z.object({
   firstName: required("First name", 50),
   lastName: required("Last name", 50),
   dob: birthDate,
-  phone: required("Phone", 20),
+  phone,
   email: contactEmail,
   gender: optionalText("Gender", 20),
   address: optionalText("Address", 200),
@@ -51,7 +54,7 @@ export const signupSchema = patientSchema.extend({ email: loginEmail, password: 
 export const portalLoginSchema = z.object({ email: loginEmail, password: newPassword });
 
 export const contactInfoSchema = z.object({
-  phone: required("Phone", 20),
+  phone,
   address: optionalText("Address", 200),
   gender: optionalText("Gender", 20),
 });
@@ -63,7 +66,7 @@ export const emergencyContactSchema = z.object({
   firstName: required("First name", 50),
   lastName: required("Last name", 50),
   relationship: required("Relationship", 50),
-  phoneNumber: required("Phone", 20),
+  phoneNumber: phone,
   isPrimary: z.boolean().default(false),
 });
 

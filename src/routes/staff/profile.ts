@@ -33,7 +33,7 @@ export async function getWeeklySchedule(doctorId: number) {
 const idParam = z.coerce.number().int().positive();
 
 const phoneSchema = z.object({
-  phone: z.string().trim().min(1),
+  phone: z.string("Phone is required").trim().regex(/^\d{10}$/, "Phone must be exactly 10 digits"),
 });
 
 const certificateSchema = z

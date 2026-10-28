@@ -1,21 +1,10 @@
--- Service fees and itemized invoices:
---   service_fee holds the price of every visit (by specialty), lab test, and medication
---   invoice_item holds the lines of an invoice, so one invoice can have many fees
---   invoice.amount is kept equal to the sum of its lines by a trigger
---   checking a patient out creates the visit's invoice automatically
---   lab tests and prescriptions added to the visit later are added while the invoice is unpaid,
---   and removed again if they're cancelled or stopped while it's unpaid
---
--- Needs migration 011 (invoice and payment changes must say which employee made them).
--- The app sets app.employee_id itself. This file uses the admin's ID (1017) for the old invoices.
---
--- waiting for review, so it hasn't been run on Supabase yet
+-- service_fee prices and itemized invoices (invoice_item); checking a patient out creates the invoice
+-- needs 011; uses the admin's ID (1017) to add lines to the existing invoices
 
 BEGIN;
 
 SELECT set_config('app.employee_id', '1017', true);
 
--- one row per price: a visit for a specialty, a lab test, or a medication
 CREATE TABLE public.service_fee (
     fee_id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     category character varying(20) NOT NULL,
@@ -29,7 +18,6 @@ CREATE TABLE public.service_fee (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT chk_service_fee_category CHECK (category IN ('Visit', 'Lab Test', 'Medication')),
     CONSTRAINT chk_service_fee_price CHECK (price >= 0),
-    -- each fee points to exactly the one thing its category prices
     CONSTRAINT chk_service_fee_link CHECK (
         (category = 'Visit' AND specialty_id IS NOT NULL AND lab_test_type_id IS NULL AND medication_id IS NULL)
         OR (category = 'Lab Test' AND lab_test_type_id IS NOT NULL AND specialty_id IS NULL AND medication_id IS NULL)
@@ -37,12 +25,10 @@ CREATE TABLE public.service_fee (
     )
 );
 
--- one price for each specialty, lab test, and medication
 CREATE UNIQUE INDEX service_fee_one_per_specialty ON public.service_fee (specialty_id) WHERE specialty_id IS NOT NULL;
 CREATE UNIQUE INDEX service_fee_one_per_lab_test ON public.service_fee (lab_test_type_id) WHERE lab_test_type_id IS NOT NULL;
 CREATE UNIQUE INDEX service_fee_one_per_medication ON public.service_fee (medication_id) WHERE medication_id IS NOT NULL;
 
--- the lines of an invoice, with the price copied in so later price changes don't change old invoices
 CREATE TABLE public.invoice_item (
     invoice_item_id integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     invoice_id integer NOT NULL REFERENCES public.invoice(invoice_id) ON DELETE RESTRICT,
@@ -59,12 +45,9 @@ CREATE TABLE public.invoice_item (
 
 CREATE INDEX idx_invoice_item_invoice ON public.invoice_item (invoice_id);
 
--- like every other table, so Supabase's public API roles can't read or change them
 ALTER TABLE public.service_fee ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.invoice_item ENABLE ROW LEVEL SECURITY;
 
--- Supabase also grants those roles access to new tables, so take it back.
--- The loop skips roles that only exist on Supabase.
 DO $$
 DECLARE
     api_role text;
@@ -76,11 +59,6 @@ BEGIN
 END;
 $$;
 
--- ---------------------------------------------------------------------
--- starting prices (the admin changes them on the Fees page)
--- ---------------------------------------------------------------------
-
--- visits, priced by specialty
 INSERT INTO public.service_fee (category, type, name, price, specialty_id)
 SELECT 'Visit', v.type, s.name || ' visit', v.price, s.specialty_id
 FROM (VALUES
@@ -94,18 +72,15 @@ FROM (VALUES
 ) AS v(specialty, type, price)
 JOIN public.specialty s ON s.name = v.specialty;
 
--- any other specialty gets the primary care price until the admin changes it
 INSERT INTO public.service_fee (category, type, name, price, specialty_id)
 SELECT 'Visit', 'Specialist', s.name || ' visit', 150.00, s.specialty_id
 FROM public.specialty s
 WHERE NOT EXISTS (SELECT 1 FROM public.service_fee f WHERE f.specialty_id = s.specialty_id);
 
--- lab tests, starting from the cost already saved on each test
 INSERT INTO public.service_fee (category, type, name, price, lab_test_type_id)
 SELECT 'Lab Test', CASE WHEN t.name ILIKE '%urin%' THEN 'Urine Test' ELSE 'Blood Test' END, t.name, t.cost, t.lab_test_type_id
 FROM public.lab_test_type t;
 
--- medications, priced per prescription fill
 INSERT INTO public.service_fee (category, type, name, price, medication_id)
 SELECT 'Medication', COALESCE(v.type, 'Other'), m.name, COALESCE(v.price, 20.00), m.medication_id
 FROM public.medication m
@@ -121,10 +96,6 @@ LEFT JOIN (VALUES
     ('Acetaminophen', 'Pain Relief', 6.00),
     ('Sertraline', 'Mental Health', 25.00)
 ) AS v(medication, type, price) ON v.medication = m.name;
-
--- ---------------------------------------------------------------------
--- triggers
--- ---------------------------------------------------------------------
 
 -- keeps invoice.amount equal to its lines, and Paid or Pending to match what's paid
 CREATE OR REPLACE FUNCTION public.refresh_invoice_total(target_invoice integer) RETURNS void
@@ -156,6 +127,7 @@ BEGIN
 END;
 $$;
 
+-- refreshes the total when a line is added or removed
 CREATE OR REPLACE FUNCTION public.invoice_item_changed() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -170,7 +142,7 @@ CREATE OR REPLACE TRIGGER invoice_item_total_trigger
     AFTER INSERT OR DELETE ON public.invoice_item
     FOR EACH ROW EXECUTE FUNCTION public.invoice_item_changed();
 
--- the open (not void) invoice of a visit, only while it's still unpaid
+-- the visit's invoice, only while it's unpaid
 CREATE OR REPLACE FUNCTION public.unpaid_visit_invoice(visit integer) RETURNS integer
 LANGUAGE sql
 SET search_path = ''
@@ -178,7 +150,7 @@ AS $$
     SELECT invoice_id FROM public.invoice WHERE appointment_id = visit AND status IN ('Pending', 'Overdue') LIMIT 1;
 $$;
 
--- adds one lab order as a line on an invoice, at today's price
+-- adds a lab order as an invoice line at today's price
 CREATE OR REPLACE FUNCTION public.add_lab_order_line(target_invoice integer, order_id integer) RETURNS void
 LANGUAGE sql
 SET search_path = ''
@@ -191,7 +163,7 @@ AS $$
     ON CONFLICT (lab_order_id) DO NOTHING;
 $$;
 
--- adds one prescribed medication as a line on an invoice, at today's price
+-- adds a prescribed medication as an invoice line at today's price
 CREATE OR REPLACE FUNCTION public.add_prescription_line(target_invoice integer, item_id integer) RETURNS void
 LANGUAGE sql
 SET search_path = ''
@@ -204,7 +176,7 @@ AS $$
     ON CONFLICT (prescription_item_id) DO NOTHING;
 $$;
 
--- checking out (Completed) creates the invoice: the visit fee, its lab tests, and its medications
+-- checking out creates the invoice: visit fee, lab tests and medications
 CREATE OR REPLACE FUNCTION public.invoice_completed_visit() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -217,7 +189,6 @@ BEGIN
     IF NEW.status <> 'Completed' OR OLD.status = 'Completed' THEN
         RETURN NULL;
     END IF;
-    -- a visit has at most one open invoice
     IF EXISTS (SELECT 1 FROM public.invoice WHERE appointment_id = NEW.appointment_id AND status <> 'Void') THEN
         RETURN NULL;
     END IF;
@@ -252,8 +223,7 @@ CREATE OR REPLACE TRIGGER appointment_invoice_trigger
     AFTER UPDATE OF status ON public.appointment
     FOR EACH ROW EXECUTE FUNCTION public.invoice_completed_visit();
 
--- a lab test ordered for a visit that's already billed is added while the bill is unpaid,
--- and a cancelled one is taken off while the bill is unpaid
+-- adds a lab test to the unpaid invoice, or takes it off when cancelled
 CREATE OR REPLACE FUNCTION public.lab_order_billing() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -282,8 +252,7 @@ CREATE OR REPLACE TRIGGER lab_order_billing_trigger
     AFTER INSERT OR UPDATE OF status ON public.lab_order
     FOR EACH ROW EXECUTE FUNCTION public.lab_order_billing();
 
--- a medication prescribed at a visit that's already billed is added while the bill is unpaid,
--- and a stopped one is taken off while the bill is unpaid
+-- adds a medication to the unpaid invoice, or takes it off when stopped
 CREATE OR REPLACE FUNCTION public.prescription_item_billing() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -314,9 +283,6 @@ CREATE OR REPLACE TRIGGER prescription_item_billing_trigger
     AFTER INSERT OR UPDATE OF is_active ON public.prescription_item
     FOR EACH ROW EXECUTE FUNCTION public.prescription_item_billing();
 
--- ---------------------------------------------------------------------
--- old invoices: one line each for the amount they already have, so totals stay the same
--- ---------------------------------------------------------------------
 INSERT INTO public.invoice_item (invoice_id, category, description, price, created_at)
 SELECT i.invoice_id, 'Visit', 'Visit (billed before itemized fees)', i.amount, i.issue_date::timestamp
 FROM public.invoice i;
