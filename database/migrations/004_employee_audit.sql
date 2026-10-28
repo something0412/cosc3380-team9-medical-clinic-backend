@@ -1,9 +1,7 @@
--- Employee audit: a trigger records changes to an employee's active status,
--- employee type, and office. One row per changed field.
+-- employee_audit: a trigger records changes to an employee's active status, type and office
 
 BEGIN;
 
--- no foreign key, so the audit stays even if an employee is ever deleted
 CREATE TABLE IF NOT EXISTS public.employee_audit (
     audit_id integer GENERATED ALWAYS AS IDENTITY,
     employee_id integer NOT NULL,
@@ -17,11 +15,8 @@ CREATE TABLE IF NOT EXISTS public.employee_audit (
 
 CREATE INDEX IF NOT EXISTS idx_employee_audit_employee ON public.employee_audit (employee_id, changed_at);
 
--- like every other table, so Supabase's public API roles can't read or change it
 ALTER TABLE public.employee_audit ENABLE ROW LEVEL SECURITY;
 
--- Supabase also grants those roles access to new tables, so take it back.
--- The loop skips roles that only exist on Supabase.
 DO $$
 DECLARE
     api_role text;
@@ -32,6 +27,7 @@ BEGIN
 END;
 $$;
 
+-- one audit row per changed field
 CREATE OR REPLACE FUNCTION public.record_employee_changes() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''

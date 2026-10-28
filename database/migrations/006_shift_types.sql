@@ -1,9 +1,7 @@
--- shift types and their 30-minute appointment time slots
--- run once in the Supabase SQL editor; shifts that already exist (same name) are skipped
+-- shift types (Morning, Afternoon, Full Day) and their 30-minute time slots
 
 BEGIN;
 
--- shifts
 INSERT INTO shift_type (name, start_time, end_time)
 SELECT v.name, v.start_time::time, v.end_time::time
 FROM (VALUES
@@ -13,7 +11,6 @@ FROM (VALUES
 ) AS v(name, start_time, end_time)
 WHERE NOT EXISTS (SELECT 1 FROM shift_type s WHERE LOWER(s.name) = LOWER(v.name));
 
--- time slots for each shift (Full Day has a 12:00-13:00 lunch break)
 INSERT INTO time_slot (shift_type_id, start_time, end_time)
 SELECT s.shift_type_id, v.start_time::time, v.end_time::time
 FROM (VALUES
@@ -60,7 +57,6 @@ WHERE NOT EXISTS (
 
 COMMIT;
 
--- check the result
 SELECT s.name, to_char(s.start_time, 'HH24:MI') AS starts, to_char(s.end_time, 'HH24:MI') AS ends, count(t.time_slot_id) AS time_slots
 FROM shift_type s
 LEFT JOIN time_slot t ON t.shift_type_id = s.shift_type_id

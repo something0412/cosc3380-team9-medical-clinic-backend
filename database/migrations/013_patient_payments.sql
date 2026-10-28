@@ -1,25 +1,16 @@
--- Patient payments and insurance auto-pay:
---   a patient can pay their own invoice in the portal (card details are checked by the app, never saved)
---     the app sets app.patient_id instead of app.employee_id for these changes
---   billing_history records the patient who paid (changed_by_patient)
---   a verified insurance pays the patient's invoices automatically:
---     when an invoice is created or a charge is added to it, and when the insurance gets verified
---   a charge added after insurance paid is added to the invoice and insurance pays it too
---
--- Needs migrations 011 and 012.
--- waiting for review, so it hasn't been run on Supabase yet
+-- patients pay their own invoices by card (app.patient_id), and verified insurance pays invoices automatically
+-- needs 011 and 012
 
 BEGIN;
 
 SELECT set_config('app.employee_id', '1017', true);
 
--- history: an employee or the patient made the change
 ALTER TABLE public.billing_history ALTER COLUMN changed_by DROP NOT NULL;
 ALTER TABLE public.billing_history ADD COLUMN changed_by_patient integer;
 ALTER TABLE public.billing_history ADD CONSTRAINT chk_billing_history_who
   CHECK (changed_by IS NOT NULL OR changed_by_patient IS NOT NULL);
 
--- the patient paying in the portal, or null when it isn't a patient
+-- the patient paying in the portal, or null
 CREATE OR REPLACE FUNCTION public.billing_patient_id() RETURNS integer
 LANGUAGE plpgsql
 SET search_path = ''
@@ -37,8 +28,7 @@ BEGIN
 END;
 $$;
 
--- the employee making a billing change, null when the patient is paying,
--- and the change is refused when it's neither
+-- the employee making the change, null when a patient is paying; refuses when it's neither
 CREATE OR REPLACE FUNCTION public.billing_employee_id() RETURNS integer
 LANGUAGE plpgsql
 SET search_path = ''
@@ -62,7 +52,7 @@ BEGIN
 END;
 $$;
 
--- invoices: a patient's payment can only move their own invoice between Pending, Overdue and Paid
+-- a patient can only pay their own invoice; staff rules stay the same
 CREATE OR REPLACE FUNCTION public.check_invoice_change() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -99,7 +89,7 @@ BEGIN
 END;
 $$;
 
--- invoices: record new invoices and status changes, by the employee or the patient
+-- records the change by the employee or the patient
 CREATE OR REPLACE FUNCTION public.record_invoice_change() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -122,7 +112,7 @@ BEGIN
 END;
 $$;
 
--- payments: a patient can only add a card payment to their own invoice; staff rules stay the same
+-- a patient can only add a card payment to their own invoice; staff rules stay the same
 CREATE OR REPLACE FUNCTION public.check_payment_change() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -167,7 +157,7 @@ BEGIN
 END;
 $$;
 
--- payments: record the change (employee or patient), then keep the invoice Paid or Pending
+-- records the change, then sets the invoice Paid or Pending
 CREATE OR REPLACE FUNCTION public.record_payment_change() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -190,7 +180,6 @@ BEGIN
         NULLIF(current_setting('app.reason', true), '')
     );
 
-    -- refunded payments don't count, payments waiting on a refund still do
     SELECT amount, status INTO invoice_amount, invoice_status FROM public.invoice WHERE invoice_id = NEW.invoice_id;
     SELECT COALESCE(sum(amount_paid), 0) INTO still_paid
     FROM public.payment WHERE invoice_id = NEW.invoice_id AND status <> 'Refunded';
@@ -204,11 +193,7 @@ BEGIN
 END;
 $$;
 
--- ---------------------------------------------------------------------
--- insurance pays automatically
--- ---------------------------------------------------------------------
-
--- pays what's left on an invoice with the patient's insurance, only when that insurance is verified
+-- pays what's left on an invoice when the patient's insurance is verified
 CREATE OR REPLACE FUNCTION public.pay_with_insurance(target_invoice integer) RETURNS void
 LANGUAGE plpgsql
 SET search_path = ''
@@ -242,7 +227,7 @@ BEGIN
 END;
 $$;
 
--- a new or changed charge: update the total, then let insurance pay the rest
+-- updates the total, then lets insurance pay the rest
 CREATE OR REPLACE FUNCTION public.invoice_item_changed() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -256,7 +241,7 @@ BEGIN
 END;
 $$;
 
--- the visit's invoice that new charges can still go on: unpaid, or paid only by insurance
+-- the visit's invoice new charges can go on: unpaid, or paid only by insurance
 CREATE OR REPLACE FUNCTION public.billable_visit_invoice(visit integer) RETURNS integer
 LANGUAGE sql
 SET search_path = ''
@@ -297,7 +282,7 @@ BEGIN
 END;
 $$;
 
--- medications: added to an unpaid or insurance-paid invoice, taken off only while unpaid
+-- medications: same rules as lab tests
 CREATE OR REPLACE FUNCTION public.prescription_item_billing() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -326,7 +311,7 @@ BEGIN
 END;
 $$;
 
--- verifying a patient's insurance pays their unpaid invoices
+-- verifying insurance pays the patient's unpaid invoices
 CREATE OR REPLACE FUNCTION public.insurance_verified() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -348,7 +333,6 @@ CREATE OR REPLACE TRIGGER insurance_verified_trigger
     AFTER INSERT OR UPDATE OF status ON public.insurance
     FOR EACH ROW EXECUTE FUNCTION public.insurance_verified();
 
--- patients whose insurance is already verified get their unpaid invoices paid now
 DO $$
 DECLARE
     bill record;

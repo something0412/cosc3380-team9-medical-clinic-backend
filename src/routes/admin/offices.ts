@@ -34,12 +34,8 @@ const officeSchema = z.object({
     .toUpperCase()
     .refine((state) => US_STATES.includes(state), "Select a valid US state"),
   zip: z.string().trim().regex(/^\d{5}(-\d{4})?$/, "ZIP code must be 5 digits or ZIP+4 (12345-6789)"),
-  // digits with common separators, 10 digits or 11 starting with 1
-  phone: z
-    .string()
-    .trim()
-    .max(20, "Phone must be 20 characters or less")
-    .refine((phone) => /^[\d\s()+.-]+$/.test(phone) && /^1?\d{10}$/.test(phone.replace(/\D/g, "")), "Enter a valid 10-digit phone number"),
+  // digits only, exactly 10
+  phone: z.string("Phone is required").trim().regex(/^\d{10}$/, "Phone must be exactly 10 digits"),
 });
 
 const statusSchema = z.object({ isActive: z.boolean("Status must be true or false") });

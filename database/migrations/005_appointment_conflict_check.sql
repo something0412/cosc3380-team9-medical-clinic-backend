@@ -1,9 +1,8 @@
--- Appointment conflict check: rejects an appointment that overlaps another
--- active appointment for the same doctor or the same patient, even when the
--- row is written without the booking API.
+-- trigger that rejects an appointment overlapping another active one for the same doctor or patient
 
 BEGIN;
 
+-- skips cancelled and status-only changes; locks per doctor and patient so two bookings can't both pass
 CREATE OR REPLACE FUNCTION public.check_appointment_conflict() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
@@ -16,7 +15,6 @@ BEGIN
         RETURN NEW;
     END IF;
 
-    -- status changes like check out don't move the appointment, so they skip the check
     IF TG_OP = 'UPDATE'
        AND OLD.status <> 'Cancelled'
        AND OLD.doctor_id = NEW.doctor_id
@@ -26,12 +24,10 @@ BEGIN
         RETURN NEW;
     END IF;
 
-    -- each query below needs a fresh snapshot to see appointments committed while it waited
     IF current_setting('transaction_isolation') <> 'read committed' THEN
         RAISE EXCEPTION 'Appointments must be written in a read committed transaction';
     END IF;
 
-    -- one writer at a time per doctor, then per patient, until the transaction ends
     PERFORM pg_advisory_xact_lock(33801, NEW.doctor_id);
     PERFORM pg_advisory_xact_lock(33802, NEW.patient_id);
 

@@ -1,9 +1,7 @@
--- Appointment history: a trigger records every new appointment and every
--- change to an appointment's status, date, time slot, or doctor.
+-- appointment_history: a trigger records new appointments and changes to status, date, time slot or doctor
 
 BEGIN;
 
--- no foreign key, so the history stays even if an appointment is ever deleted
 CREATE TABLE IF NOT EXISTS public.appointment_history (
     history_id integer GENERATED ALWAYS AS IDENTITY,
     appointment_id integer NOT NULL,
@@ -23,11 +21,8 @@ CREATE TABLE IF NOT EXISTS public.appointment_history (
 
 CREATE INDEX IF NOT EXISTS idx_appointment_history_appointment ON public.appointment_history (appointment_id, changed_at);
 
--- like every other table, so Supabase's public API roles can't read or change it
 ALTER TABLE public.appointment_history ENABLE ROW LEVEL SECURITY;
 
--- Supabase also grants those roles access to new tables, so take it back.
--- The loop skips roles that only exist on Supabase.
 DO $$
 DECLARE
     api_role text;
@@ -38,12 +33,12 @@ BEGIN
 END;
 $$;
 
+-- skips updates that don't change a tracked column
 CREATE OR REPLACE FUNCTION public.record_appointment_history() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = ''
 AS $$
 BEGIN
-    -- updates that leave every tracked column alone aren't recorded
     IF TG_OP = 'UPDATE'
        AND OLD.status IS NOT DISTINCT FROM NEW.status
        AND OLD.appointment_date IS NOT DISTINCT FROM NEW.appointment_date
