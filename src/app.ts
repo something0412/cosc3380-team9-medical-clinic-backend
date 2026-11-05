@@ -10,6 +10,7 @@ import { randomBytes } from "node:crypto";
 import { pool } from "./lib/db.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 import { requireRole, requireStaffType } from "./middleware/requireRole.js";
+import { markNoShows } from "./middleware/markNoShows.js";
 import { loadSessionUser } from "./middleware/sessionUser.js";
 import { adminRouter } from "./routes/admin/index.js";
 import { authRouter } from "./routes/auth.js";
@@ -75,6 +76,7 @@ app.use(session({
 
 // deactivated or deleted accounts lose their session before any route sees it
 app.use(loadSessionUser);
+app.use("/api", markNoShows);
 
 app.use("/api/patient/:id", (req, res, next) => {
   if (req.user?.role !== "patient") {

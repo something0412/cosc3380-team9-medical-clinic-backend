@@ -4,6 +4,7 @@ import { adminBillingRouter } from "./billing.js";
 import { adminEmployeesRouter } from "./employees.js";
 import { adminOfficesRouter } from "./offices.js";
 import { adminPatientsRouter } from "./patients.js";
+import { adminDataReportsRouter } from "./dataReports.js";
 import { adminReportsRouter } from "./reports.js";
 import { adminSchedulesRouter } from "./schedules.js";
 import { adminShiftsRouter, adminTimeSlotsRouter } from "./shifts.js";
@@ -23,6 +24,7 @@ adminRouter.use("/time-slots", adminTimeSlotsRouter);
 adminRouter.use("/staff", adminStaffRouter);
 adminRouter.use("/patients", adminPatientsRouter);
 adminRouter.use(adminReportsRouter);
+adminRouter.use(adminDataReportsRouter);
 adminRouter.use(adminBillingRouter);
 adminRouter.use("/fees", adminFeesRouter);
 

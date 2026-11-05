@@ -44,6 +44,9 @@ function fromDatabaseError(err: DatabaseError) {
     case "22008":
     case "22P02":
       return new HttpError(400, "Some of the submitted values are not valid");
+    // a rule a trigger refused, with the trigger's own message
+    case "P0001":
+      return new HttpError(409, err.message);
     default:
       return null;
   }
