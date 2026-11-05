@@ -21,7 +21,11 @@ const REFERRAL_COLUMNS = `
   to_char(r.date_issued, 'YYYY-MM-DD') AS "dateIssued",
   to_char(r.expiration_date, 'YYYY-MM-DD') AS "expirationDate",
   r.status,
-  r.expiration_date < ${CLINIC_TODAY} AS "expired"
+  r.expiration_date < ${CLINIC_TODAY} AS "expired",
+  r.primary_doctor_id AS "primaryDoctorId",
+  pdoc.first_name || ' ' || pdoc.last_name AS "primaryDoctorName",
+  r.request_reason AS "requestReason",
+  r.denial_reason AS "denialReason"
 `;
 
 // patients see who referred them and where, without internal IDs they don't need
@@ -43,6 +47,7 @@ const REFERRAL_JOINS = `
   JOIN employee rd ON rd.employee_id = r.referring_doctor_id
   JOIN employee sd ON sd.employee_id = r.specialist_doctor_id
   JOIN specialty sp ON sp.specialty_id = r.specialty_id
+  LEFT JOIN employee pdoc ON pdoc.employee_id = r.primary_doctor_id
 `;
 
 const NEWEST_FIRST = `ORDER BY r.date_issued DESC, r.referral_id DESC`;
@@ -52,6 +57,7 @@ export interface NewReferral {
   specialistDoctorId: number;
   specialtyId: number;
   expirationDate?: string;
+  reason: string;
 }
 
 async function getReferral(db: Pool | PoolClient, referralId: number) {
@@ -59,13 +65,14 @@ async function getReferral(db: Pool | PoolClient, referralId: number) {
   return result.rows[0];
 }
 
-// a doctor sees referrals they sent and referrals sent to them, never anyone else's
-export async function listDoctorReferrals(doctorId: number, view: "sent" | "received" | "all" = "all") {
-  const list = async (column: string) =>
-    (await pool.query(`SELECT ${REFERRAL_COLUMNS} FROM referral r ${REFERRAL_JOINS} WHERE r.${column} = $1 ${NEWEST_FIRST}`, [doctorId])).rows;
+// a doctor sees referrals they sent, ones waiting for them as primary doctor, and approved ones sent to them as specialist
+export async function listDoctorReferrals(doctorId: number) {
+  const list = async (where: string) =>
+    (await pool.query(`SELECT ${REFERRAL_COLUMNS} FROM referral r ${REFERRAL_JOINS} WHERE ${where} ${NEWEST_FIRST}`, [doctorId])).rows;
   return {
-    sent: view === "received" ? [] : await list("referring_doctor_id"),
-    received: view === "sent" ? [] : await list("specialist_doctor_id"),
+    toApprove: await list("r.primary_doctor_id = $1 AND r.referring_doctor_id <> $1"),
+    sent: await list("r.referring_doctor_id = $1"),
+    received: await list("r.specialist_doctor_id = $1 AND r.status = 'Approved'"),
   };
 }
 
@@ -74,7 +81,7 @@ export async function listPatientReferrals(patientId: number) {
   return result.rows;
 }
 
-// active doctors and the active specialties they practice, for the referral form
+// active doctors and the active specialties they practice that need a referral, for the referral form
 export async function listSpecialists(doctorId: number) {
   const result = await pool.query(
     `
@@ -85,7 +92,7 @@ export async function listSpecialists(doctorId: number) {
     FROM doctor d
     JOIN employee e ON e.employee_id = d.employee_id AND e.is_active
     JOIN doctor_specialty ds ON ds.doctor_id = d.employee_id AND ds.is_active
-    JOIN specialty sp ON sp.specialty_id = ds.specialty_id AND sp.is_active
+    JOIN specialty sp ON sp.specialty_id = ds.specialty_id AND sp.is_active AND sp.requires_referral
     WHERE d.employee_id <> $1
     GROUP BY e.employee_id
     ORDER BY e.last_name, e.first_name
@@ -148,13 +155,48 @@ async function lockPeople(client: PoolClient, doctorId: number, input: NewReferr
 }
 
 // every rule is in the insert itself, so nothing can change between checking and saving
+// it goes to the patient's primary doctor, and the primary doctor's own referral is approved as it's sent
 export async function createReferral(doctorId: number, input: NewReferral) {
   return withTransaction(async (client) => {
+    // the referral trigger checks who is sending it
+    await client.query(`SELECT set_config('app.employee_id', $1, true)`, [String(doctorId)]);
     await lockPeople(client, doctorId, input);
+
+    const primary = await client.query(`SELECT doctor_id AS "doctorId" FROM patient_doctor WHERE patient_id = $1 AND is_primary AND is_active`, [
+      input.patientId,
+    ]);
+    let primaryDoctorId: number | null = primary.rows[0]?.doctorId ?? null;
+
+    // no primary doctor yet: today's primary care visit with me makes me their primary doctor
+    if (primaryDoctorId === null) {
+      const visit = await client.query(
+        `
+        SELECT 1 FROM appointment a
+        JOIN specialty sp ON sp.specialty_id = a.specialty_id
+        WHERE a.patient_id = $1 AND a.doctor_id = $2 AND a.appointment_date = ${CLINIC_TODAY}
+          AND (a.status = 'Completed' OR (a.status = 'Scheduled' AND a.checked_in_at IS NOT NULL))
+          AND sp.name IN ('Family Medicine', 'Internal Medicine')
+        `,
+        [input.patientId, doctorId]
+      );
+      if (!visit.rowCount) {
+        throw new HttpError(409, "This patient doesn't have a primary doctor yet. Their first Family Medicine or Internal Medicine visit sets one.");
+      }
+      await client.query(
+        `
+        INSERT INTO patient_doctor (patient_id, doctor_id, is_primary, assigned_date, is_active)
+        VALUES ($1, $2, true, ${CLINIC_TODAY}, true)
+        ON CONFLICT (patient_id, doctor_id) DO UPDATE SET is_primary = true, is_active = true, assigned_date = EXCLUDED.assigned_date
+        `,
+        [input.patientId, doctorId]
+      );
+      primaryDoctorId = doctorId;
+    }
+
     const result = await client.query(
       `
-      INSERT INTO referral (patient_id, referring_doctor_id, specialist_doctor_id, specialty_id, date_issued, expiration_date, status)
-      SELECT $1, $2, $3, $4, ${CLINIC_TODAY}, COALESCE($5::date, ${CLINIC_TODAY} + ${DEFAULT_DAYS}), 'Pending'
+      INSERT INTO referral (patient_id, referring_doctor_id, specialist_doctor_id, specialty_id, date_issued, expiration_date, status, primary_doctor_id, request_reason)
+      SELECT $1, $2, $3, $4, ${CLINIC_TODAY}, COALESCE($5::date, ${CLINIC_TODAY} + ${DEFAULT_DAYS}), $7, $6, $8
       WHERE EXISTS (SELECT 1 FROM employee WHERE employee_id = $2 AND is_active)
         AND EXISTS (SELECT 1 FROM patient WHERE patient_id = $1 AND is_active)
         AND (${CARES_FOR_PATIENT})
@@ -163,31 +205,45 @@ export async function createReferral(doctorId: number, input: NewReferral) {
         AND COALESCE($5::date, ${CLINIC_TODAY} + ${DEFAULT_DAYS}) > ${CLINIC_TODAY}
       RETURNING referral_id AS "referralId"
       `,
-      [input.patientId, doctorId, input.specialistDoctorId, input.specialtyId, input.expirationDate ?? null]
+      [
+        input.patientId,
+        doctorId,
+        input.specialistDoctorId,
+        input.specialtyId,
+        input.expirationDate ?? null,
+        primaryDoctorId,
+        primaryDoctorId === doctorId ? "Approved" : "Pending",
+        input.reason,
+      ]
     );
     if (!result.rowCount) await refuseReferral(client, doctorId, input);
     return getReferral(client, result.rows[0].referralId);
   });
 }
 
-// only the specialist it was sent to answers it, once, before it expires
-export async function decideReferral(referralId: number, doctorId: number, decision: "Approved" | "Denied") {
-  const result = await pool.query(
-    `
-    UPDATE referral
-    SET status = $1
-    WHERE referral_id = $2 AND specialist_doctor_id = $3 AND status = 'Pending' AND expiration_date >= ${CLINIC_TODAY}
-    `,
-    [decision, referralId, doctorId]
-  );
-  if (result.rowCount) return getReferral(pool, referralId);
+// only the patient's primary doctor answers it, once, before it expires; a denial needs a reason
+export async function decideReferral(referralId: number, doctorId: number, decision: "Approved" | "Denied", reason: string | null) {
+  const decided = await withTransaction(async (client) => {
+    // the referral trigger checks who is deciding
+    await client.query(`SELECT set_config('app.employee_id', $1, true)`, [String(doctorId)]);
+    const result = await client.query(
+      `
+      UPDATE referral
+      SET status = $1, denial_reason = $4
+      WHERE referral_id = $2 AND primary_doctor_id = $3 AND status = 'Pending' AND expiration_date >= ${CLINIC_TODAY}
+      `,
+      [decision, referralId, doctorId, decision === "Denied" ? reason : null]
+    );
+    return result.rowCount;
+  });
+  if (decided) return getReferral(pool, referralId);
 
   const current = await getReferral(pool, referralId);
   // doctors who aren't on the referral don't find out it exists
-  if (!current || (current.referringDoctorId !== doctorId && current.specialistDoctorId !== doctorId)) {
+  if (!current || (current.referringDoctorId !== doctorId && current.primaryDoctorId !== doctorId && current.specialistDoctorId !== doctorId)) {
     throw new HttpError(404, "Referral not found");
   }
-  if (current.specialistDoctorId !== doctorId) throw new HttpError(403, "Only the specialist this was sent to can approve or deny it");
+  if (current.primaryDoctorId !== doctorId) throw new HttpError(403, "Only the patient's primary doctor can approve or deny it");
   if (current.status !== "Pending") throw new HttpError(409, `This referral was already ${current.status.toLowerCase()}`);
   if (current.expired) throw new HttpError(409, "This referral has expired");
   throw new HttpError(409, "This referral just changed. Reload it and try again.");

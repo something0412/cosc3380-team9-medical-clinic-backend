@@ -26,8 +26,8 @@ doctorDashboardRouter.get("/api/doctor/dashboard", async (req, res) => {
     [doctorId]
   );
 
-  // get how many referrals sent to the doctor still need an answer
-  const { received } = await listDoctorReferrals(doctorId, "received");
+  // get how many referrals are waiting for me as primary doctor
+  const { toApprove } = await listDoctorReferrals(doctorId);
 
   // get the doctor's newest lab results
   const recentResults = await pool.query(
@@ -40,8 +40,9 @@ doctorDashboardRouter.get("/api/doctor/dashboard", async (req, res) => {
     myPatients: myPatients.rows[0].count,
     todayAppointments: stillToSee.length,
     pendingLabs: pendingLabs.rows[0].count,
-    referralsToReview: received.filter((r) => r.status === "Pending" && !r.expired).length,
-    upcomingAppointments: [...stillToSee, ...later.filter((a) => a.status === "Scheduled")].slice(0, 5),
+    referralsToReview: toApprove.filter((r) => r.status === "Pending" && !r.expired).length,
+    // upcoming means not started yet, so patients already checked in aren't listed
+    upcomingAppointments: [...stillToSee.filter((a) => !a.checkedIn), ...later.filter((a) => a.status === "Scheduled")].slice(0, 5),
     recentResults: recentResults.rows,
   });
 });
