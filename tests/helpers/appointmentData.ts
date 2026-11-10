@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { ids } from "./testDb.js";
 
 // sample people and visits for the appointment lifecycle and list tests
@@ -38,7 +38,7 @@ export async function addEmployee(db: Pool, firstName: string, typeId: number, o
   const { rows } = await db.query(
     `
     INSERT INTO employee (first_name, last_name, dob, employee_type_id, phone, email, office_id)
-    VALUES ($1, 'Tester', '1990-01-01', $2, '713-555-7000', $3, $4)
+    VALUES ($1, 'Tester', '1990-01-01', $2, '7135557000', $3, $4)
     RETURNING employee_id
     `,
     [firstName, typeId, `${firstName.toLowerCase()}${counter}@test.org`, officeId]
@@ -72,7 +72,7 @@ export async function addNurse(db: Pool, firstName: string, officeId: number) {
 
 export async function addPatient(db: Pool, firstName: string, lastName = "Visitor") {
   const { rows } = await db.query(
-    `INSERT INTO patient (first_name, last_name, dob, phone, email) VALUES ($1, $2, '1980-05-05', '713-555-8800', 'visit@test.org') RETURNING patient_id`,
+    `INSERT INTO patient (first_name, last_name, dob, phone, email) VALUES ($1, $2, '1980-05-05', '7135558800', 'visit@test.org') RETURNING patient_id`,
     [firstName, lastName]
   );
   return rows[0].patient_id as number;
@@ -119,6 +119,72 @@ export async function waitForLockWait(db: Pool) {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error("No request started waiting for the lock");
+}
+
+// runs the work in one transaction as this employee, since the billing and referral triggers check who made each change
+export async function asEmployee<T>(db: Pool, employeeId: number, work: (client: PoolClient) => Promise<T>) {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(`SELECT set_config('app.employee_id', $1, true)`, [String(employeeId)]);
+    const result = await work(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// a referral made the way the referral trigger allows, sent by the referring doctor and decided by the patient's primary doctor
+// the primary doctor defaults to the referring doctor and is assigned if the patient has none yet
+export async function addReferral(
+  db: Pool,
+  r: {
+    patientId: number;
+    referringDoctorId: number;
+    specialistDoctorId: number;
+    specialtyId: number;
+    issued: string;
+    expires: string;
+    status?: "Pending" | "Approved" | "Denied";
+    primaryDoctorId?: number;
+    reason?: string;
+  }
+) {
+  const primaryDoctorId = r.primaryDoctorId ?? r.referringDoctorId;
+  const status = r.status ?? "Pending";
+  const current = await db.query(`SELECT doctor_id FROM patient_doctor WHERE patient_id = $1 AND is_primary AND is_active`, [r.patientId]);
+  if (!current.rowCount) {
+    await db.query(
+      `INSERT INTO patient_doctor (patient_id, doctor_id, is_primary, is_active) VALUES ($1, $2, true, true)
+       ON CONFLICT (patient_id, doctor_id) DO UPDATE SET is_primary = true, is_active = true`,
+      [r.patientId, primaryDoctorId]
+    );
+  } else if (current.rows[0].doctor_id !== primaryDoctorId) {
+    throw new Error(`Patient ${r.patientId} already has primary doctor ${current.rows[0].doctor_id}`);
+  }
+
+  // the primary doctor's own referral is approved as it's sent, anything else starts Pending
+  const approvedNow = status === "Approved" && primaryDoctorId === r.referringDoctorId;
+  const referralId = await asEmployee(db, r.referringDoctorId, async (client) => {
+    const { rows } = await client.query(
+      `INSERT INTO referral (patient_id, referring_doctor_id, primary_doctor_id, specialist_doctor_id, specialty_id, date_issued, expiration_date, status, request_reason)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING referral_id`,
+      [r.patientId, r.referringDoctorId, primaryDoctorId, r.specialistDoctorId, r.specialtyId, r.issued, r.expires, approvedNow ? "Approved" : "Pending", r.reason ?? "Needs a specialist"]
+    );
+    return rows[0].referral_id as number;
+  });
+
+  // the trigger only lets the primary doctor decide, and only before it expires
+  if (status !== "Pending" && !approvedNow) {
+    await asEmployee(db, primaryDoctorId, (client) =>
+      client.query(`UPDATE referral SET status = $1, denial_reason = $2 WHERE referral_id = $3`, [status, status === "Denied" ? "Not needed yet" : null, referralId])
+    );
+  }
+  return referralId;
 }
 
 export async function historyCount(db: Pool, appointmentId: number) {

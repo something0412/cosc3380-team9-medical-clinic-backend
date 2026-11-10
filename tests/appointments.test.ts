@@ -3,6 +3,7 @@ import { after, before, describe, test } from "node:test";
 import { startTestApp } from "./helpers/testApp.js";
 import type { TestClient, TestResponse } from "./helpers/testApp.js";
 import { ids, resetDatabase } from "./helpers/testDb.js";
+import { addReferral } from "./helpers/appointmentData.js";
 
 // IDs created by SETUP below, after the fixtures
 const DOCTOR = { dan: ids.doctor, fay: 5, fred: 6, wendy: 7, ivan: 8, olga: 9, una: 10, sam: 11, rex: 12, cal: 13, nora: 14, carl: 15 };
@@ -29,18 +30,18 @@ const SETUP = `
     (1, '11:00', '11:30', true);
 
   INSERT INTO employee (first_name, last_name, dob, employee_type_id, phone, email, office_id, is_active) VALUES
-    ('Fay', 'Family', '1980-01-01', 2, '713-555-2005', 'fay@test.org', 1, true),
-    ('Fred', 'Fuller', '1980-01-01', 2, '713-555-2006', 'fred@test.org', 2, true),
-    ('Wendy', 'Weekday', '1980-01-01', 2, '713-555-2007', 'wendy@test.org', 1, true),
-    ('Ivan', 'Inactive', '1980-01-01', 2, '713-555-2008', 'ivan@test.org', 1, false),
-    ('Olga', 'Offsite', '1980-01-01', 2, '713-555-2009', 'olga@test.org', 1, true),
-    ('Una', 'Unassigned', '1980-01-01', 2, '713-555-2010', 'una@test.org', 1, true),
-    ('Sam', 'Sleeping', '1980-01-01', 2, '713-555-2011', 'sam@test.org', 1, true),
-    ('Rex', 'Retired', '1980-01-01', 2, '713-555-2012', 'rex@test.org', 1, true),
-    ('Cal', 'Closed', '1980-01-01', 2, '713-555-2013', 'cal@test.org', 1, true),
-    ('Nora', 'Night', '1980-01-01', 2, '713-555-2014', 'nora@test.org', 1, true),
-    ('Carl', 'Cardio', '1980-01-01', 2, '713-555-2015', 'carl@test.org', 1, true),
-    ('Mia', 'Main', '1992-02-02', 4, '713-555-2016', 'mia@test.org', 1, true);
+    ('Fay', 'Family', '1980-01-01', 2, '7135552005', 'fay@test.org', 1, true),
+    ('Fred', 'Fuller', '1980-01-01', 2, '7135552006', 'fred@test.org', 2, true),
+    ('Wendy', 'Weekday', '1980-01-01', 2, '7135552007', 'wendy@test.org', 1, true),
+    ('Ivan', 'Inactive', '1980-01-01', 2, '7135552008', 'ivan@test.org', 1, false),
+    ('Olga', 'Offsite', '1980-01-01', 2, '7135552009', 'olga@test.org', 1, true),
+    ('Una', 'Unassigned', '1980-01-01', 2, '7135552010', 'una@test.org', 1, true),
+    ('Sam', 'Sleeping', '1980-01-01', 2, '7135552011', 'sam@test.org', 1, true),
+    ('Rex', 'Retired', '1980-01-01', 2, '7135552012', 'rex@test.org', 1, true),
+    ('Cal', 'Closed', '1980-01-01', 2, '7135552013', 'cal@test.org', 1, true),
+    ('Nora', 'Night', '1980-01-01', 2, '7135552014', 'nora@test.org', 1, true),
+    ('Carl', 'Cardio', '1980-01-01', 2, '7135552015', 'carl@test.org', 1, true),
+    ('Mia', 'Main', '1992-02-02', 4, '7135552016', 'mia@test.org', 1, true);
 
   INSERT INTO doctor (employee_id, license_number, license_issuing_state, license_expiration_date, npi_number)
   SELECT employee_id, 'TX-B' || employee_id, 'TX', '2030-01-01', '20000000' || lpad(employee_id::text, 2, '0')
@@ -63,23 +64,14 @@ const SETUP = `
   VALUES (7, to_char((now() AT TIME ZONE 'America/Chicago')::date + 7, 'FMDay'), 1, 1, 1);
 
   INSERT INTO patient (first_name, last_name, dob, phone, email, is_active) VALUES
-    ('Olive', 'Other', '1995-02-02', '713-555-9100', 'olive@test.org', true),
-    ('Ina', 'Inactive', '1970-03-03', '713-555-9200', 'ina@test.org', false);
+    ('Olive', 'Other', '1995-02-02', '7135559100', 'olive@test.org', true),
+    ('Ina', 'Inactive', '1970-03-03', '7135559200', 'ina@test.org', false);
   INSERT INTO patient_creds (patient_id, username, password_hash)
   SELECT 2, 'olive@test.org', password_hash FROM patient_creds WHERE patient_id = 1;
   INSERT INTO employee_creds (employee_id, username, password_hash)
   SELECT e.id, e.username, c.password_hash
   FROM (VALUES (4, 'rita@test.org'), (16, 'mia@test.org')) AS e(id, username)
   CROSS JOIN employee_creds c WHERE c.employee_id = 1;
-
-  -- cardiology referrals to Dan, written by Fay
-  INSERT INTO referral (patient_id, referring_doctor_id, specialist_doctor_id, specialty_id, date_issued, expiration_date, status)
-  SELECT r.patient_id, 5, 2, 2, t.today + r.issued, t.today + r.expires, r.status
-  FROM (VALUES
-    (1, 2, -1, 30, 'Approved'), (2, 1, -1, 30, 'Pending'), (3, 1, -1, 30, 'Denied'), (4, 1, -60, -1, 'Approved'), (5, 1, 20, 40, 'Approved')
-  ) AS r(ord, patient_id, issued, expires, status)
-  CROSS JOIN (SELECT (now() AT TIME ZONE 'America/Chicago')::date AS today) t
-  ORDER BY r.ord;
 `;
 
 const WEEK = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -94,6 +86,17 @@ before(async () => {
   app = await startTestApp();
   await app.db.query(SETUP);
   today = (await app.db.query(`SELECT to_char((now() AT TIME ZONE 'America/Chicago')::date, 'YYYY-MM-DD') AS today`)).rows[0].today;
+
+  // cardiology referrals to Dan, written by Fay as the primary doctor of Pat and Olive
+  for (const [patientId, issued, expires, status] of [
+    [PATIENT.olive, -1, 30, "Approved"], [PATIENT.pat, -1, 30, "Pending"], [PATIENT.pat, -1, 30, "Denied"],
+    [PATIENT.pat, -60, -1, "Approved"], [PATIENT.pat, 20, 40, "Approved"],
+  ] as const) {
+    await addReferral(app.db, {
+      patientId, referringDoctorId: DOCTOR.fay, specialistDoctorId: DOCTOR.dan, specialtyId: ids.cardiology,
+      issued: day(issued), expires: day(expires), status,
+    });
+  }
 
   anonymous = app.client();
   pat = await app.loginPatient(PATIENT.pat, "pat@test.org");
@@ -197,6 +200,8 @@ describe("availability", () => {
       timeSlotId: SLOT.m0800,
       startTime: "08:00",
       endTime: "08:30",
+      available: true,
+      unavailableReason: null,
     });
     assert.deepEqual(
       res.body.map((s: { timeSlotId: number }) => s.timeSlotId),
@@ -272,7 +277,8 @@ describe("availability", () => {
 
 describe("public availability", () => {
   const PUBLIC_FIELDS = [
-    "date", "doctorId", "doctorName", "endTime", "officeId", "officeName", "requiresReferral", "specialty", "specialtyId", "startTime", "timeSlotId",
+    "available", "date", "doctorId", "doctorName", "endTime", "officeId", "officeName", "requiresReferral", "specialty", "specialtyId", "startTime",
+    "timeSlotId", "unavailableReason",
   ];
   const BAD_IDS = ["abc", "0", "-1", "1.5", "99999999999"];
   const family = ids.familyMedicine;
@@ -305,6 +311,8 @@ describe("public availability", () => {
       timeSlotId: SLOT.m0800,
       startTime: "08:00",
       endTime: "08:30",
+      available: true,
+      unavailableReason: null,
     });
     assert.deepEqual(
       res.body.map((s: { timeSlotId: number }) => s.timeSlotId),
@@ -462,7 +470,7 @@ describe("public availability", () => {
       bodies.push(res.body);
     }
     assert.ok(bodies[1].every((s: { requiresReferral: boolean }) => s.requiresReferral));
-    assert.doesNotMatch(JSON.stringify(bodies), /referral_?id|patient|busy|started|olive|pat@|713-555-|1990-01-01|1995-02-02|password/i);
+    assert.doesNotMatch(JSON.stringify(bodies), /referral_?id|patient|busy|started|olive|pat@|713-?555-?|1990-01-01|1995-02-02|password/i);
   });
 
   test("searching public times doesn't open the signed in booking routes", async () => {

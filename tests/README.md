@@ -19,11 +19,11 @@ Tests must never run against the shared Supabase database. They only use `TEST_D
 - `appointmentLifecycle.test.ts` covers check in, check out, and No Show at the front desk, including office and date rules and requests that happen at the same time.
 - `appointmentLists.test.ts` covers the receptionist, nurse, and doctor appointment lists and who can see each one.
 - `referrals.test.ts` covers creating, approving, denying, and listing referrals, decisions at the same time, and booking with referrals.
-- `billing.test.ts` covers creating invoices, recording payments, balances in every billing view, requests at the same time, rollback, Admin only access, and migration 009.
+- `billing.test.ts` covers invoices made at check out, payments by staff and patients, refunds, void invoices, insurance payments, balances in every billing view, requests at the same time, rollback, who can use each route, and one open invoice per visit.
 - `doctorClinical.test.ts` covers which patients a doctor can see, charts, the dashboard, visit summaries, diagnoses, prescriptions, lab orders, and requests at the same time.
 - `workflows.test.ts` follows one patient from sign up through booking, check in, vitals, the doctor's notes, a lab result, a referral, and a paid bill, and checks that every role sees the same records.
 - `nurseSupplies.test.ts` covers office stock, using supplies, ordering and receiving, requests at the same time, rollback, and nurse only access.
-- `nurseLabClinical.test.ts` covers which patients a nurse can see, vitals, nursing notes, allergies and home medications for doctors and nurses, lab processing and results, and requests at the same time.
+- `nurseLabClinical.test.ts` covers which visits a nurse can open and edit, vitals, nursing notes, allergies and home medications for doctors and nurses, lab processing and results, and requests at the same time.
 - `triggers.test.ts` covers the appointment history, employee audit, and appointment conflict triggers, plus row level security on the audit tables.
 - `profiles.test.ts` covers patient and staff profile updates, emergency contacts, insurance, certificates, password rules, ownership checks, and registration of every patient and staff route.
 - `sessions.test.ts` covers ending sessions for deactivated, disabled, and deleted accounts, and checks that role, staff type, and office changes apply on the next request.

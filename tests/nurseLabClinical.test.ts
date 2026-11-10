@@ -20,11 +20,14 @@ import { startTestApp } from "./helpers/testApp.js";
 import type { TestClient, TestResponse } from "./helpers/testApp.js";
 import { ids, resetDatabase } from "./helpers/testDb.js";
 
-const NURSE_CHART_KEYS = [
-  "patientId", "firstName", "lastName", "dob", "gender", "phone", "isActive",
-  "allergies", "missingForms", "homeMedications", "vitals", "nursingNotes", "visits", "labOrders", "prescriptions",
-];
+const NURSE_VISIT_KEYS = ["appointmentId", "patientId", "patientName", "date", "startTime", "doctorName", "specialty", "officeName", "status", "checkedIn"];
 const NOT_TODAY = "This patient doesn't have a visit at your office today";
+// why the visit view won't let a nurse edit intake
+const BLOCKED = {
+  day: "Intake can only be edited on the day of the appointment.",
+  office: "Intake can only be edited by nurses at this appointment's office.",
+  checkIn: "Intake can be edited once the front desk checks the patient in.",
+};
 
 let app: Awaited<ReturnType<typeof startTestApp>>;
 let today: string;
@@ -37,7 +40,8 @@ const meds: Record<string, number> = {};
 const labTests: Record<string, number> = {};
 
 const statuses = (responses: TestResponse[]) => responses.map((r) => r.status).sort();
-const ids_ = (rows: { patientId: number }[]) => rows.map((r) => r.patientId);
+const visitIds = (rows: { appointmentId: number }[]) => rows.map((r) => r.appointmentId);
+const visitView = (client: TestClient, appointmentId: number) => client.get(`/api/nurse/appointments/${appointmentId}`);
 
 async function count(sql: string, params: unknown[] = []) {
   return Number((await app.db.query(sql, params)).rows[0].n);
@@ -131,56 +135,71 @@ after(async () => {
 });
 
 describe("which patients a nurse can see", () => {
-  test("a nurse sees patients with a visit at their office today, and nobody else", async () => {
-    const res = await nina.get("/api/nurse/patients");
+  test("a nurse finds visits by date at any office or their own, without cancelled ones", async () => {
+    const res = await nina.get(`/api/nurse/appointments?date=${today}`);
     assert.equal(res.status, 200, JSON.stringify(res.body));
-    assert.deepEqual(Object.keys(res.body[0]), ["patientId", "firstName", "lastName", "dob", "lastVisit", "nextVisit"]);
-    const listed = ids_(res.body);
-    for (const key of ["arrived", "notArrived", "finished"]) assert.ok(listed.includes(visits[key].patientId), `${key} missing`);
-    for (const key of ["cancelled", "noShow", "mainStreet", "tomorrow", "pastOnly", "patYesterday"]) assert.equal(listed.includes(visits[key].patientId), false, `${key} listed`);
-    assert.ok(ids_((await omar.get("/api/nurse/patients")).body).includes(visits.mainStreet.patientId), "Omar sees his office");
+    assert.deepEqual(Object.keys(res.body[0]), NURSE_VISIT_KEYS);
+    const listed = visitIds(res.body);
+    for (const key of ["arrived", "notArrived", "finished", "noShow", "mainStreet"]) assert.ok(listed.includes(visits[key].appointmentId), `${key} missing`);
+    for (const key of ["cancelled", "tomorrow", "pastOnly", "patYesterday"]) assert.equal(listed.includes(visits[key].appointmentId), false, `${key} listed`);
+
+    const westside = visitIds((await nina.get(`/api/nurse/appointments?date=${today}&officeId=${ids.westsideOffice}`)).body);
+    assert.ok(westside.includes(visits.arrived.appointmentId) && !westside.includes(visits.mainStreet.appointmentId), "office filter");
+    assert.ok(visitIds((await omar.get(`/api/nurse/appointments?date=${today}&officeId=${ids.mainOffice}`)).body).includes(visits.mainStreet.appointmentId), "Omar sees his office");
+    assert.equal((await nina.get("/api/nurse/appointments")).status, 400);
   });
 
-  test("the nurse chart has the clinical record but no insurance", async () => {
-    const res = await nina.get(`/api/nurse/patients/${visits.arrived.patientId}`);
+  test("the nurse visit view has the clinical record but no insurance", async () => {
+    const res = await visitView(nina, visits.arrived.appointmentId);
     assert.equal(res.status, 200, JSON.stringify(res.body));
-    assert.deepEqual(Object.keys(res.body), NURSE_CHART_KEYS);
-    assert.equal(JSON.stringify(res.body).includes("AE-SECRET-9"), false);
+    for (const key of ["allergies", "missingForms", "homeMedications", "vitals", "nursingNotes", "prescriptions"]) assert.ok(key in res.body, `${key} missing`);
+    assert.equal("insurance" in res.body, false);
+    assert.equal(/AE-SECRET-9|Aetna/.test(JSON.stringify(res.body)), false);
     assert.equal((await dan.get(`/api/doctor/patients/${visits.arrived.patientId}`)).body.insurance.provider, "Aetna");
-
-    for (const key of ["cancelled", "noShow", "mainStreet", "tomorrow", "pastOnly"]) {
-      assert.deepEqual((await nina.get(`/api/nurse/patients/${visits[key].patientId}`)).body, { error: NOT_TODAY }, key);
-    }
-    assert.equal((await nina.get("/api/nurse/patients/999999")).status, 404);
+    assert.equal((await visitView(nina, 999999)).status, 404);
   });
 
-  test("an office in the query changes nothing, and a moved or deactivated nurse loses access on the next request", async () => {
-    assert.deepEqual(ids_((await nell.get(`/api/nurse/patients?officeId=${ids.mainOffice}`)).body), ids_((await nell.get("/api/nurse/patients")).body));
+  test("a moved or deactivated nurse gets the new rules on the next request", async () => {
     await app.db.query(`UPDATE employee SET office_id = $1 WHERE employee_id = $2`, [ids.mainOffice, nellId]);
     try {
-      assert.equal((await nell.get(`/api/nurse/patients/${visits.arrived.patientId}`)).status, 403);
-      assert.equal((await nell.get(`/api/nurse/patients/${visits.mainStreet.patientId}`)).status, 200);
+      assert.deepEqual((await nell.get("/api/nurse/my-office")).body, { officeId: ids.mainOffice });
+      assert.equal((await visitView(nell, visits.arrived.appointmentId)).body.editBlockedReason, BLOCKED.office);
+      assert.equal((await visitView(nell, visits.mainStreet.appointmentId)).body.editBlockedReason, null);
     } finally {
       await app.db.query(`UPDATE employee SET office_id = $1 WHERE employee_id = $2`, [ids.westsideOffice, nellId]);
     }
     await app.db.query(`UPDATE employee SET is_active = false WHERE employee_id = $1`, [nellId]);
     try {
-      assert.equal((await nell.get("/api/nurse/patients")).status, 401);
+      assert.equal((await nell.get(`/api/nurse/appointments?date=${today}`)).status, 401);
     } finally {
       await app.db.query(`UPDATE employee SET is_active = true WHERE employee_id = $1`, [nellId]);
       nell = await app.loginStaff(nellId);
     }
   });
 
-  test("the visit view shows what was recorded, only for my office's patients today", async () => {
-    const res = await nina.get(`/api/nurse/appointments/${visits.arrived.appointmentId}`);
+  test("the visit view shows what was recorded for any visit, and why intake can't be edited", async () => {
+    const res = await visitView(nina, visits.arrived.appointmentId);
     assert.equal(res.status, 200, JSON.stringify(res.body));
     for (const key of ["appointmentId", "checkedIn", "summary", "diagnoses", "vitals", "nursingNotes", "prescriptions", "allergies", "homeMedications", "missingForms"]) {
       assert.ok(key in res.body, `${key} missing`);
     }
     assert.equal("insurance" in res.body, false);
-    assert.equal((await nina.get(`/api/nurse/appointments/${visits.mainStreet.appointmentId}`)).status, 404);
-    assert.equal((await nina.get(`/api/nurse/appointments/${visits.tomorrow.appointmentId}`)).status, 403);
+
+    // other days and offices open read only
+    const reasons: [string, string | null][] = [
+      ["arrived", null],
+      ["finished", null],
+      ["notArrived", BLOCKED.checkIn],
+      ["mainStreet", BLOCKED.office],
+      ["tomorrow", BLOCKED.day],
+      ["pastOnly", BLOCKED.day],
+      ["patYesterday", BLOCKED.day],
+    ];
+    for (const [key, reason] of reasons) {
+      const view = await visitView(nina, visits[key].appointmentId);
+      assert.deepEqual([view.status, view.body.editBlockedReason], [200, reason], key);
+    }
+    for (const key of ["cancelled", "noShow"]) assert.ok((await visitView(nina, visits[key].appointmentId)).body.editBlockedReason, key);
   });
 
   test("the dashboard counts today's visits and lists checked in patients without vitals", async () => {
@@ -284,8 +303,9 @@ describe("nursing notes", () => {
     const doctorView = (await dan.get(`/api/doctor/appointments/${appointmentId}`)).body;
     assert.deepEqual([doctorView.summary.visitReason, doctorView.summary.notes, doctorView.summary.recordedById], ["Chest pain", "Doctor plan, updated", ids.doctor]);
     assert.deepEqual(doctorView.nursingNotes.map((n: { note: string }) => n.note), ["BP taken in left arm"]);
-    const chart = (await nina.get(`/api/nurse/patients/${patientId}`)).body;
-    assert.ok(chart.nursingNotes.some((n: { nursingNoteId: number }) => n.nursingNoteId === written.body.nursingNoteId), "note on the chart");
+    const nurseView = (await visitView(nina, appointmentId)).body;
+    assert.deepEqual([nurseView.patientId, nurseView.summary.notes], [patientId, "Doctor plan, updated"]);
+    assert.ok(nurseView.nursingNotes.some((n: { nursingNoteId: number }) => n.nursingNoteId === written.body.nursingNoteId), "note on the visit");
   });
 
   test("only the nurse who wrote a note can change it, and two nurses writing at once both keep their notes", async () => {
@@ -394,7 +414,7 @@ describe("allergies and home medications", () => {
     const back = await dan.post(`/api/doctor/patients/${patientId}/allergies`, { allergyTypeId: allergyTypes.penicillin, severity: "Mild" });
     assert.deepEqual([back.status, back.body.allergyId, back.body.reaction, back.body.isActive], [201, allergyId, null, true]);
     assert.equal(await count(`SELECT count(*) AS n FROM allergy WHERE patient_id = $1`, [patientId]), 1);
-    assert.deepEqual((await nina.get(`/api/nurse/patients/${patientId}`)).body.allergies.map((a: { allergyId: number }) => a.allergyId), [allergyId]);
+    assert.deepEqual((await visitView(nina, visits.arrived.appointmentId)).body.allergies.map((a: { allergyId: number }) => a.allergyId), [allergyId]);
 
     assert.equal((await nina.post(`/api/nurse/patients/${patientId}/allergies`, { allergyTypeId: allergyTypes.retired, severity: "Mild" })).status, 400);
     assert.equal((await nina.post(`/api/nurse/patients/${patientId}/allergies`, { allergyTypeId: allergyTypes.latex, severity: "Deadly" })).status, 400);
@@ -424,7 +444,7 @@ describe("allergies and home medications", () => {
   });
 
   test("home medications stay separate from prescriptions and follow the same rules for both roles", async () => {
-    const { patientId } = await arrivedAtWestside();
+    const { patientId, appointmentId } = await arrivedAtWestside();
     await app.db.query(`INSERT INTO appointment (patient_id, doctor_id, office_id, appointment_date, time_slot_id, specialty_id, status, booking_channel)
       VALUES ($1, $2, $3, $4, $5, $6, 'Completed', 'Web')`, [patientId, ids.doctor, ids.mainOffice, dayFrom(today, -5), slots.allDay, ids.familyMedicine]);
     const prescriptionsBefore = await count(`SELECT count(*) AS n FROM prescription`);
@@ -458,7 +478,7 @@ describe("allergies and home medications", () => {
 
     // once stopped it can be added again
     assert.equal((await nina.post(`/api/nurse/patients/${patientId}/home-medications`, { medicationId: meds.lisinopril })).status, 201);
-    assert.deepEqual((await nina.get(`/api/nurse/patients/${patientId}`)).body.homeMedications.map((m: { medicationName: string }) => m.medicationName), ["Fish Oil", "Lisinopril"]);
+    assert.deepEqual((await visitView(nina, appointmentId)).body.homeMedications.map((m: { medicationName: string }) => m.medicationName), ["Fish Oil", "Lisinopril"]);
     assert.equal(await count(`SELECT count(*) AS n FROM prescription`), prescriptionsBefore);
     assert.deepEqual((await nina.get("/api/nurse/medications")).body, (await dan.get("/api/doctor/medications")).body);
   });
@@ -569,7 +589,7 @@ describe("lab technicians", () => {
     const tries = [
       lee.post("/api/doctor/lab-orders", { patientId, labTestTypeId: labTests.cbc }),
       lee.get(`/api/doctor/patients/${patientId}`),
-      lee.get(`/api/nurse/patients/${patientId}`),
+      lee.get(`/api/nurse/appointments/${appointmentId}`),
       lee.post(`/api/nurse/appointments/${appointmentId}/vitals`, { heartRate: 70 }),
       lee.patch(`/api/receptionist/appointments/${appointmentId}/check-in`),
       lee.get("/api/admin/invoices"),

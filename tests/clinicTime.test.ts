@@ -29,12 +29,13 @@ before(async () => {
   ({ yesterday, today, tomorrow } = rows[0]);
 
   const slots = await app.db.query(
-    `INSERT INTO time_slot (shift_type_id, start_time, end_time) VALUES (1, '08:00', '08:30'), (1, '09:00', '09:30'), (1, '10:00', '10:30') RETURNING time_slot_id`
+    `INSERT INTO time_slot (shift_type_id, start_time, end_time) VALUES (1, '08:00', '08:30'), (1, '09:00', '09:30'), (1, '10:00', '10:30'), (1, '23:30', '23:59:59') RETURNING time_slot_id`
   );
-  const [eight, nine, ten] = slots.rows.map((r) => r.time_slot_id as number);
+  const [eight, nine, ten, late] = slots.rows.map((r) => r.time_slot_id as number);
+  // today's visit is late in the day so it isn't marked No Show automatically before the test runs
   const visits: [string, number, string][] = [
     [yesterday, eight, "Scheduled"],
-    [today, eight, "Scheduled"],
+    [today, late, "Scheduled"],
     [today, nine, "Cancelled"],
     [tomorrow, eight, "Scheduled"],
     [tomorrow, nine, "No Show"],
@@ -47,6 +48,8 @@ before(async () => {
       [ids.patient, ids.doctor, ids.mainOffice, date, slot, ids.familyMedicine, status]
     );
   }
+  // yesterday's visit was checked in, so it stays Scheduled and only its date keeps it out of the count
+  await app.db.query(`UPDATE appointment SET checked_in_at = now() - interval '1 day' WHERE appointment_date = $1`, [yesterday]);
 
   pat = await app.loginPatient(ids.patient, "pat@test.org");
   nurse = await app.loginStaff(ids.nurse);

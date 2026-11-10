@@ -7,25 +7,30 @@ INSERT INTO employee_types (type_name, is_active) VALUES ('Intern', false);
 
 -- office IDs are 1 Main Street, 2 Westside, 3 Closed (inactive)
 INSERT INTO office (name, street, city, state, zip, phone) VALUES
-  ('Main Street Clinic', '1 Main St', 'Houston', 'TX', '77001', '713-555-0100'),
-  ('Westside Clinic', '2 West St', 'Houston', 'TX', '77002', '713-555-0200');
+  ('Main Street Clinic', '1 Main St', 'Houston', 'TX', '77001', '7135550100'),
+  ('Westside Clinic', '2 West St', 'Houston', 'TX', '77002', '7135550200');
 INSERT INTO office (name, street, city, state, zip, phone, is_active) VALUES
-  ('Closed Clinic', '3 Old St', 'Houston', 'TX', '77003', '713-555-0300', false);
+  ('Closed Clinic', '3 Old St', 'Houston', 'TX', '77003', '7135550300', false);
 
 -- specialty IDs are 1 Family Medicine, 2 Cardiology (referral), 3 Retired Specialty (inactive)
 INSERT INTO specialty (name) VALUES ('Family Medicine');
 INSERT INTO specialty (name, requires_referral) VALUES ('Cardiology', true);
 INSERT INTO specialty (name, is_active) VALUES ('Retired Specialty', false);
 
+-- visit prices from migration 012, so checking out creates a real invoice
+INSERT INTO service_fee (category, type, name, price, specialty_id) VALUES
+  ('Visit', 'Primary Care', 'Family Medicine visit', 150.00, 1),
+  ('Visit', 'Specialist', 'Cardiology visit', 275.00, 2);
+
 -- shift 1 is Morning
 INSERT INTO shift_type (name, start_time, end_time) VALUES ('Morning', '08:00', '12:00');
 
 -- employee IDs are 1 admin, 2 doctor, 3 nurse, 4 receptionist (no login)
 INSERT INTO employee (first_name, last_name, dob, employee_type_id, phone, email, office_id) VALUES
-  ('Ada', 'Admin', '1980-01-01', 1, '713-555-1000', 'ada@test.org', 1),
-  ('Dan', 'Doctor', '1975-05-05', 2, '713-555-1001', 'dan@test.org', 1),
-  ('Nina', 'Nurse', '1985-03-03', 3, '713-555-1002', 'nina@test.org', 2),
-  ('Rita', 'Reception', '1990-07-07', 4, '713-555-1003', 'rita@test.org', 2);
+  ('Ada', 'Admin', '1980-01-01', 1, '7135551000', 'ada@test.org', 1),
+  ('Dan', 'Doctor', '1975-05-05', 2, '7135551001', 'dan@test.org', 1),
+  ('Nina', 'Nurse', '1985-03-03', 3, '7135551002', 'nina@test.org', 2),
+  ('Rita', 'Reception', '1990-07-07', 4, '7135551003', 'rita@test.org', 2);
 
 INSERT INTO employee_creds (employee_id, username, password_hash) VALUES
   (1, 'ada@test.org', 'replaced'),
@@ -39,5 +44,5 @@ INSERT INTO doctor_schedule (doctor_id, day_of_week, office_id, specialty_id, sh
 INSERT INTO nurse VALUES (3, 'RN-NINA1', 'TX', '2030-01-01', 'RN');
 
 -- patient 1 with a login
-INSERT INTO patient (first_name, last_name, dob, phone, email) VALUES ('Pat', 'Patient', '1990-01-01', '713-555-9000', 'pat@test.org');
+INSERT INTO patient (first_name, last_name, dob, phone, email) VALUES ('Pat', 'Patient', '1990-01-01', '7135559000', 'pat@test.org');
 INSERT INTO patient_creds (patient_id, username, password_hash) VALUES (1, 'pat@test.org', 'replaced');

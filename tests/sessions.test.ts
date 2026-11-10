@@ -17,7 +17,7 @@ async function addEmployee(firstName: string, typeId: number, officeId: number) 
   const { rows } = await app.db.query(
     `
     INSERT INTO employee (first_name, last_name, dob, employee_type_id, phone, email, office_id)
-    VALUES ($1, 'Tester', '1990-01-01', $2, '713-555-7000', $3, $4)
+    VALUES ($1, 'Tester', '1990-01-01', $2, '7135557000', $3, $4)
     RETURNING employee_id
     `,
     [firstName, typeId, email, officeId]
@@ -36,7 +36,7 @@ async function signUp(email: string) {
     firstName: "Sam",
     lastName: "Session",
     dob: "1992-02-02",
-    phone: "713-555-7100",
+    phone: "7135557100",
     email,
     password: TEST_PASSWORD,
   })) as { status: number; body: { patientId: number }; cookie?: string };

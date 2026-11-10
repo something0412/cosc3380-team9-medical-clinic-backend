@@ -25,7 +25,7 @@ function receptionist(overrides: object = {}) {
     lastName: "Person",
     dob: "1990-02-02",
     email: `person${emailCount}@test.org`,
-    phone: "713-555-2000",
+    phone: "7135552000",
     employeeTypeId: 4,
     officeId: ids.mainOffice,
     ...overrides,
@@ -196,10 +196,10 @@ describe("editing employees", () => {
     const created = await createEmployee(receptionist({ login: { username: "edit.me", password: "Long-Enough-1" } }));
     const hashBefore = (await app.db.query("SELECT password_hash FROM employee_creds WHERE employee_id = $1", [created.employeeId])).rows[0];
 
-    const body = receptionist({ email: created.email, phone: "713-555-9999", officeId: ids.westsideOffice });
+    const body = receptionist({ email: created.email, phone: "7135559999", officeId: ids.westsideOffice });
     const res = await admin.put(`/api/admin/employees/${created.employeeId}`, body);
     assert.equal(res.status, 200);
-    assert.equal(res.body.phone, "713-555-9999");
+    assert.equal(res.body.phone, "7135559999");
     assert.equal(res.body.officeId, ids.westsideOffice);
     assert.equal(res.body.isActive, true);
     assert.equal(res.body.loginActive, true);

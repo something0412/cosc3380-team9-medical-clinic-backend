@@ -3,6 +3,7 @@ import { after, before, test } from "node:test";
 import { startTestApp } from "../helpers/testApp.js";
 import type { TestClient } from "../helpers/testApp.js";
 import { ids, resetDatabase } from "../helpers/testDb.js";
+import { addDoctor, addReferral, dayFrom } from "../helpers/appointmentData.js";
 
 let app: Awaited<ReturnType<typeof startTestApp>>;
 let admin: TestClient;
@@ -27,9 +28,16 @@ before(async () => {
     `INSERT INTO doctor_schedule (doctor_id, day_of_week, office_id, specialty_id, shift_type_id) VALUES ($1, $2, 1, $3, 1) ON CONFLICT (doctor_id, day_of_week) DO NOTHING`,
     [ids.doctor, weekday, ids.cardiology]
   );
+  // the cardiology visit needs an approved referral to Dan from the patient's primary doctor
+  const familyDoctor = await addDoctor(app.db, "Fran", ids.mainOffice);
+  const referralId = await addReferral(app.db, {
+    patientId: ids.patient, referringDoctorId: familyDoctor, specialistDoctorId: ids.doctor, specialtyId: ids.cardiology,
+    issued: dayFrom(today, -1), expires: dayFrom(today, 30), status: "Approved",
+  });
   await app.db.query(
-    `INSERT INTO appointment (patient_id, doctor_id, office_id, appointment_date, time_slot_id, specialty_id, booking_channel) VALUES ($1, $2, 1, $3, $4, $5, 'Web')`,
-    [ids.patient, ids.doctor, today, slot, ids.cardiology]
+    `INSERT INTO appointment (patient_id, doctor_id, office_id, appointment_date, time_slot_id, specialty_id, booking_channel, referral_id)
+     VALUES ($1, $2, 1, $3, $4, $5, 'Web', $6)`,
+    [ids.patient, ids.doctor, today, slot, ids.cardiology, referralId]
   );
 });
 
