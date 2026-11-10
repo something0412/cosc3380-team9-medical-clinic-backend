@@ -8,6 +8,8 @@ import {
   addEmployee,
   addLogin,
   addPatient,
+  addReferral,
+  asEmployee,
   dayFrom,
   freezeClockAtNoon,
   unfreezeClock,
@@ -20,31 +22,34 @@ import { ids, resetDatabase } from "./helpers/testDb.js";
 
 const DOCTOR_KEYS = [
   "referralId", "patientId", "patientName", "referringDoctorId", "referringDoctorName", "specialistDoctorId", "specialistName",
-  "specialtyId", "specialty", "dateIssued", "expirationDate", "status", "expired",
+  "specialtyId", "specialty", "dateIssued", "expirationDate", "status", "expired", "primaryDoctorId", "primaryDoctorName", "requestReason", "denialReason",
 ];
 const PATIENT_KEYS = ["referralId", "referringDoctorName", "specialistDoctorId", "specialistName", "specialtyId", "specialty", "dateIssued", "expirationDate", "status", "expired"];
 
 let app: Awaited<ReturnType<typeof startTestApp>>;
 let today: string;
 let slots: number[];
-let rayId: number, unaId: number, ivyId: number, halId: number, caraId: number, seenId: number, checkedId: number, cancelledId: number;
-let ray: TestClient, dan: TestClient, una: TestClient, seen: TestClient, checked: TestClient, cancelled: TestClient, mia: TestClient, pat: TestClient;
+let rayId: number, paigeId: number, unaId: number, ivyId: number, halId: number, caraId: number, seenId: number, checkedId: number, cancelledId: number;
+let ray: TestClient, paige: TestClient, dan: TestClient, una: TestClient, seen: TestClient, checked: TestClient, cancelled: TestClient, mia: TestClient, pat: TestClient;
 let others: [string, TestClient, number][];
 
+const REASON = "Chest pain on exertion";
 const statuses = (responses: TestResponse[]) => responses.map((r) => r.status).sort();
 const refer = (client: TestClient, body: object) => client.post("/api/doctor/referrals", body);
-const toCardiology = (patientId: number, extra: object = {}) => ({ patientId, specialistDoctorId: ids.doctor, specialtyId: ids.cardiology, ...extra });
-const decide = (client: TestClient, referralId: number | string, status: string) => client.patch(`/api/doctor/referrals/${referralId}/status`, { status });
+const toCardiology = (patientId: number, extra: object = {}) => ({ patientId, specialistDoctorId: ids.doctor, specialtyId: ids.cardiology, reason: REASON, ...extra });
+const decide = (client: TestClient, referralId: number | string, status: string, reason?: string) =>
+  client.patch(`/api/doctor/referrals/${referralId}/status`, { status, reason });
 const book = (client: TestClient, body: object) => client.post("/api/appointments", { doctorId: ids.doctor, specialtyId: ids.cardiology, ...body });
+const list = async (client: TestClient) => (await client.get("/api/doctor/referrals")).body;
 
-// a new patient under Ray's care, so each case starts with no other referrals
+// a new patient whose primary doctor is Paige and who Ray also cares for, so each case starts with no other referrals
 async function rayPatient(name = "Rae") {
   const patientId = await addPatient(app.db, name);
-  await app.db.query(`INSERT INTO patient_doctor (patient_id, doctor_id, is_primary) VALUES ($1, $2, true)`, [patientId, rayId]);
+  await app.db.query(`INSERT INTO patient_doctor (patient_id, doctor_id, is_primary) VALUES ($1, $2, true), ($1, $3, false)`, [patientId, paigeId, rayId]);
   return patientId;
 }
 
-// a Pending referral from Ray to Dan for Cardiology
+// a Pending referral from Ray to Dan for Cardiology, waiting on Paige
 async function referral(patientId: number) {
   const res = await refer(ray, toCardiology(patientId));
   assert.equal(res.status, 201, JSON.stringify(res.body));
@@ -53,18 +58,18 @@ async function referral(patientId: number) {
 
 async function approved(patientId: number) {
   const referralId = await referral(patientId);
-  assert.equal((await decide(dan, referralId, "Approved")).status, 200);
+  assert.equal((await decide(paige, referralId, "Approved")).status, 200);
   return referralId;
 }
 
 // for dates the API wouldn't allow today, like referrals that have already expired
-async function insertReferral(patientId: number, status: string, issued: string, expires: string) {
-  const { rows } = await app.db.query(
-    `INSERT INTO referral (patient_id, referring_doctor_id, specialist_doctor_id, specialty_id, date_issued, expiration_date, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING referral_id`,
-    [patientId, rayId, ids.doctor, ids.cardiology, issued, expires, status]
-  );
-  return rows[0].referral_id as number;
+async function insertReferral(patientId: number, status: "Pending" | "Approved" | "Denied", issued: string, expires: string, referringDoctorId = rayId) {
+  return addReferral(app.db, { patientId, referringDoctorId, primaryDoctorId: paigeId, specialistDoctorId: ids.doctor, specialtyId: ids.cardiology, issued, expires, status });
+}
+
+// a change made straight in the database as this doctor, to check the referral trigger on its own
+async function changeAs(employeeId: number, referralId: number, set: string) {
+  return asEmployee(app.db, employeeId, (client) => client.query(`UPDATE referral SET ${set} WHERE referral_id = $1`, [referralId]));
 }
 
 async function statusOf(referralId: number) {
@@ -78,10 +83,12 @@ function monday(n: number) {
 }
 
 // holds a change open in its own transaction while a second request waits on it
-async function whileHeld(change: string, rowId: number, send: () => Promise<TestResponse>) {
+// a referral decision has to be made as the primary doctor, so the change can run as an employee
+async function whileHeld(change: string, rowId: number, send: () => Promise<TestResponse>, employeeId?: number) {
   const held = await app.db.connect();
   try {
     await held.query("BEGIN");
+    if (employeeId) await held.query(`SELECT set_config('app.employee_id', $1, true)`, [String(employeeId)]);
     await held.query(change, [rowId]);
     const waiting = send();
     await waitForLockWait(app.db);
@@ -109,6 +116,7 @@ before(async () => {
   slots = added.rows.map((r) => r.time_slot_id);
 
   rayId = await addDoctor(app.db, "Ray", ids.mainOffice);
+  paigeId = await addDoctor(app.db, "Paige", ids.mainOffice);
   unaId = await addDoctor(app.db, "Una", ids.mainOffice);
   seenId = await addDoctor(app.db, "Seen", ids.mainOffice);
   checkedId = await addDoctor(app.db, "Checked", ids.mainOffice);
@@ -131,6 +139,7 @@ before(async () => {
   const labId = await addEmployee(app.db, "Lee", labType.rows[0].id, ids.mainOffice);
 
   ray = await app.loginStaff(rayId);
+  paige = await app.loginStaff(paigeId);
   dan = await app.loginStaff(ids.doctor);
   una = await app.loginStaff(unaId);
   seen = await app.loginStaff(seenId);
@@ -154,15 +163,19 @@ after(async () => {
 });
 
 describe("creating referrals", () => {
-  test("a doctor refers their own patient and it starts as Pending with the clinic date", async () => {
+  test("a doctor refers their patient and it waits as Pending for the primary doctor, with the clinic date", async () => {
     const patientId = await rayPatient();
     // a status or referring doctor in the body is ignored
-    const res = await refer(ray, toCardiology(patientId, { status: "Approved", referringDoctorId: unaId }));
+    const res = await refer(ray, toCardiology(patientId, { status: "Approved", referringDoctorId: unaId, reason: `  ${REASON}  ` }));
     assert.equal(res.status, 201, JSON.stringify(res.body));
     assert.deepEqual(Object.keys(res.body), DOCTOR_KEYS);
     assert.deepEqual(
       [res.body.status, res.body.referringDoctorId, res.body.specialistDoctorId, res.body.specialty, res.body.dateIssued, res.body.expirationDate, res.body.expired],
       ["Pending", rayId, ids.doctor, "Cardiology", today, dayFrom(today, 90), false]
+    );
+    assert.deepEqual(
+      [res.body.primaryDoctorId, res.body.primaryDoctorName, res.body.requestReason, res.body.denialReason],
+      [paigeId, "Paige Tester", REASON, null]
     );
     assert.equal(await statusOf(res.body.referralId), "Pending");
 
@@ -170,14 +183,38 @@ describe("creating referrals", () => {
     assert.notEqual(rows[0].db, today);
   });
 
+  test("the primary doctor's own referral is approved as it's sent", async () => {
+    const patientId = await rayPatient();
+    const res = await refer(paige, toCardiology(patientId));
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    assert.deepEqual([res.body.status, res.body.referringDoctorId, res.body.primaryDoctorId], ["Approved", paigeId, paigeId]);
+    const { rows } = await app.db.query(`SELECT decided_at IS NOT NULL AS decided FROM referral WHERE referral_id = $1`, [res.body.referralId]);
+    assert.equal(rows[0].decided, true);
+  });
+
   test("a doctor who saw the patient at a completed or checked in visit can refer them", async () => {
     const patientId = await addPatient(app.db, "Seena");
     await addAppointment(app.db, { patientId, doctorId: seenId, officeId: ids.mainOffice, date: dayFrom(today, -3), timeSlotId: slots[0], status: "Completed" });
     const visit = await addAppointment(app.db, { patientId, doctorId: checkedId, officeId: ids.mainOffice, date: today, timeSlotId: slots[1] });
     await app.db.query(`UPDATE appointment SET checked_in_at = now() WHERE appointment_id = $1`, [visit]);
+    const primaryOf = async () =>
+      (await app.db.query(`SELECT doctor_id FROM patient_doctor WHERE patient_id = $1 AND is_primary AND is_active`, [patientId])).rows.map((r) => r.doctor_id);
 
-    assert.equal((await refer(seen, toCardiology(patientId))).body.referringDoctorId, seenId);
-    assert.equal((await refer(checked, toCardiology(patientId))).body.referringDoctorId, checkedId);
+    // with no primary doctor yet, an older visit isn't enough to pick one
+    const early = await refer(seen, toCardiology(patientId));
+    assert.deepEqual(
+      [early.status, early.body.error],
+      [409, "This patient doesn't have a primary doctor yet. Their first Family Medicine or Internal Medicine visit sets one."]
+    );
+    assert.deepEqual(await primaryOf(), []);
+
+    // today's checked in Family Medicine visit makes that doctor the primary doctor, so their referral is approved
+    const fromChecked = await refer(checked, toCardiology(patientId));
+    assert.deepEqual([fromChecked.status, fromChecked.body.referringDoctorId, fromChecked.body.primaryDoctorId, fromChecked.body.status], [201, checkedId, checkedId, "Approved"]);
+    assert.deepEqual(await primaryOf(), [checkedId]);
+
+    const fromSeen = await refer(seen, toCardiology(patientId));
+    assert.deepEqual([fromSeen.status, fromSeen.body.referringDoctorId, fromSeen.body.primaryDoctorId, fromSeen.body.status], [201, seenId, checkedId, "Pending"]);
   });
 
   test("unrelated doctors and visits that never happened don't count", async () => {
@@ -192,18 +229,19 @@ describe("creating referrals", () => {
     const res = await refer(cancelled, toCardiology(patientId));
     assert.deepEqual([res.status, res.body], [403, notCared]);
 
-    await app.db.query(`UPDATE patient_doctor SET is_active = false WHERE patient_id = $1`, [patientId]);
+    await app.db.query(`UPDATE patient_doctor SET is_active = false WHERE patient_id = $1 AND doctor_id = $2`, [patientId, rayId]);
     assert.equal((await refer(ray, toCardiology(patientId))).status, 403);
     const count = await app.db.query(`SELECT count(*)::int AS n FROM referral WHERE patient_id = $1`, [patientId]);
     assert.equal(count.rows[0].n, 0);
   });
 
   test("the patient has to exist and be active", async () => {
-    assert.deepEqual((await refer(ray, toCardiology(99999))).body, { error: "Patient not found" });
     const patientId = await rayPatient();
     await app.db.query(`UPDATE patient SET is_active = false WHERE patient_id = $1`, [patientId]);
     const res = await refer(ray, toCardiology(patientId));
     assert.deepEqual([res.status, res.body.error], [409, "This patient account is inactive"]);
+    const missing = await refer(ray, toCardiology(99999));
+    assert.deepEqual([missing.status, missing.body], [404, { error: "Patient not found" }]);
   });
 
   test("the specialist has to be someone else who actively practices the specialty", async () => {
@@ -235,34 +273,76 @@ describe("creating referrals", () => {
     }
     assert.equal((await refer(ray, { patientId })).body.error, "Choose a specialist");
   });
+
+  test("a referral needs a reason", async () => {
+    const patientId = await rayPatient();
+    for (const reason of [undefined, "", "   "]) {
+      const res = await refer(ray, toCardiology(patientId, { reason }));
+      assert.deepEqual([res.status, res.body.error], [400, "Enter a reason"], JSON.stringify(reason));
+    }
+    assert.equal((await refer(ray, toCardiology(patientId, { reason: "x".repeat(2001) }))).body.error, "Keep the reason under 2000 characters");
+    const count = await app.db.query(`SELECT count(*)::int AS n FROM referral WHERE patient_id = $1`, [patientId]);
+    assert.equal(count.rows[0].n, 0);
+
+    // the trigger refuses a referral without a reason or one that skips the primary doctor, even straight in the database
+    const insert = (reason: string, primaryDoctorId: number, sentBy = rayId) =>
+      asEmployee(app.db, sentBy, (client) =>
+        client.query(
+          `INSERT INTO referral (patient_id, referring_doctor_id, primary_doctor_id, specialist_doctor_id, specialty_id, expiration_date, request_reason)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [patientId, rayId, primaryDoctorId, ids.doctor, ids.cardiology, dayFrom(today, 30), reason]
+        )
+      );
+    await assert.rejects(insert(" ", paigeId), /A referral needs a reason/);
+    await assert.rejects(insert(REASON, rayId), /The referral must go to the patient's primary doctor/);
+    await assert.rejects(insert(REASON, paigeId, unaId), /Referrals must be sent by the referring doctor/);
+  });
 });
 
 describe("approving and denying", () => {
-  test("the specialist approves or denies a Pending referral", async () => {
-    const yes = await decide(dan, await referral(await rayPatient()), "Approved");
+  test("the primary doctor approves or denies a Pending referral, and a denial needs a reason", async () => {
+    const yes = await decide(paige, await referral(await rayPatient()), "Approved", "Looks right");
     assert.equal(yes.status, 200);
     assert.deepEqual(Object.keys(yes.body), DOCTOR_KEYS);
-    assert.deepEqual([yes.body.status, yes.body.expired], ["Approved", false]);
-    assert.equal((await decide(dan, await referral(await rayPatient()), "Denied")).body.status, "Denied");
+    assert.deepEqual([yes.body.status, yes.body.expired, yes.body.denialReason], ["Approved", false, null]);
+
+    const pending = await referral(await rayPatient());
+    for (const reason of [undefined, "  "]) {
+      const res = await decide(paige, pending, "Denied", reason);
+      assert.deepEqual([res.status, res.body.error], [400, "Enter a reason for the denial"], JSON.stringify(reason));
+    }
+    assert.equal(await statusOf(pending), "Pending");
+    // the trigger wants the reason too
+    await assert.rejects(changeAs(paigeId, pending, `status = 'Denied'`), /A denial needs a reason/);
+
+    const no = await decide(paige, pending, "Denied", "Try physical therapy first");
+    assert.deepEqual([no.status, no.body.status, no.body.denialReason], [200, "Denied", "Try physical therapy first"]);
   });
 
-  test("nobody but the specialist it was sent to can decide", async () => {
+  test("nobody but the patient's primary doctor can decide", async () => {
     const referralId = await referral(await rayPatient());
-    assert.deepEqual((await decide(ray, referralId, "Approved")).body, { error: "Only the specialist this was sent to can approve or deny it" });
+    const onlyPrimary = { error: "Only the patient's primary doctor can approve or deny it" };
+    assert.deepEqual((await decide(ray, referralId, "Approved")).body, onlyPrimary);
+    assert.deepEqual((await decide(dan, referralId, "Approved")).body, onlyPrimary);
     assert.deepEqual((await decide(una, referralId, "Approved")).body, { error: "Referral not found" });
     for (const [name, client, status] of others) {
       assert.equal((await decide(client, referralId, "Approved")).status, status, name);
+    }
+    // the trigger stops the referring doctor or the specialist straight in the database too
+    for (const doctorId of [rayId, ids.doctor]) {
+      await assert.rejects(changeAs(doctorId, referralId, `status = 'Approved'`), /Only the patient's primary doctor can approve or deny this referral/);
     }
     assert.equal(await statusOf(referralId), "Pending");
   });
 
   test("a decision is final", async () => {
     const yes = await approved(await rayPatient());
-    assert.deepEqual((await decide(dan, yes, "Approved")).body, { error: "This referral was already approved" });
-    assert.deepEqual((await decide(dan, yes, "Denied")).body, { error: "This referral was already approved" });
+    assert.deepEqual((await decide(paige, yes, "Approved")).body, { error: "This referral was already approved" });
+    assert.deepEqual((await decide(paige, yes, "Denied", "Changed my mind")).body, { error: "This referral was already approved" });
+    await assert.rejects(changeAs(paigeId, yes, `status = 'Denied', denial_reason = 'Changed my mind'`), /This referral was already decided/);
     const no = await referral(await rayPatient());
-    await decide(dan, no, "Denied");
-    const again = await decide(dan, no, "Denied");
+    await decide(paige, no, "Denied", "Not needed yet");
+    const again = await decide(paige, no, "Denied", "Still not needed");
     assert.deepEqual([again.status, again.body.error], [409, "This referral was already denied"]);
     assert.deepEqual([await statusOf(yes), await statusOf(no)], ["Approved", "Denied"]);
   });
@@ -270,28 +350,29 @@ describe("approving and denying", () => {
   test("an expired referral can't be approved, but its last day still counts", async () => {
     const patientId = await rayPatient();
     const lapsed = await insertReferral(patientId, "Pending", dayFrom(today, -100), dayFrom(today, -1));
-    const res = await decide(dan, lapsed, "Approved");
+    const res = await decide(paige, lapsed, "Approved");
     assert.deepEqual([res.status, res.body.error], [409, "This referral has expired"]);
+    await assert.rejects(changeAs(paigeId, lapsed, `status = 'Approved'`), /This referral has expired/);
     assert.equal(await statusOf(lapsed), "Pending");
 
     const lastDay = await insertReferral(patientId, "Pending", dayFrom(today, -90), today);
-    assert.equal((await decide(dan, lastDay, "Approved")).status, 200);
+    assert.equal((await decide(paige, lastDay, "Approved")).status, 200);
   });
 
   test("bad decisions and IDs are rejected", async () => {
     const referralId = await referral(await rayPatient());
     for (const status of ["Pending", "Expired", "approved"]) {
-      assert.deepEqual((await decide(dan, referralId, status)).body.error, "Status must be Approved or Denied", status);
+      assert.deepEqual((await decide(paige, referralId, status)).body.error, "Status must be Approved or Denied", status);
     }
-    assert.equal((await decide(dan, "abc", "Approved")).status, 400);
-    assert.equal((await decide(dan, 999999, "Approved")).status, 404);
+    assert.equal((await decide(paige, "abc", "Approved")).status, 400);
+    assert.equal((await decide(paige, 999999, "Approved")).status, 404);
   });
 });
 
 describe("decisions at the same time", () => {
   test("approve and deny together leave one decision", async () => {
     const referralId = await referral(await rayPatient());
-    const results = await Promise.all([decide(dan, referralId, "Approved"), decide(dan, referralId, "Denied")]);
+    const results = await Promise.all([decide(paige, referralId, "Approved"), decide(paige, referralId, "Denied", "Not needed yet")]);
     assert.deepEqual(statuses(results), [200, 409]);
     const winner = results.find((r) => r.status === 200)!;
     assert.equal(await statusOf(referralId), winner.body.status);
@@ -299,68 +380,109 @@ describe("decisions at the same time", () => {
 
   test("two approvals together approve once", async () => {
     const referralId = await referral(await rayPatient());
-    assert.deepEqual(statuses(await Promise.all([decide(dan, referralId, "Approved"), decide(dan, referralId, "Approved")])), [200, 409]);
+    assert.deepEqual(statuses(await Promise.all([decide(paige, referralId, "Approved"), decide(paige, referralId, "Approved")])), [200, 409]);
   });
 
   test("a decision waiting on another one sees it and doesn't overwrite it", async () => {
     const referralId = await referral(await rayPatient());
-    const res = await whileHeld(`UPDATE referral SET status = 'Denied' WHERE referral_id = $1`, referralId, () => decide(dan, referralId, "Approved"));
+    const res = await whileHeld(
+      `UPDATE referral SET status = 'Denied', denial_reason = 'Not needed yet' WHERE referral_id = $1`,
+      referralId,
+      () => decide(paige, referralId, "Approved"),
+      paigeId
+    );
     assert.deepEqual([res.status, res.body.error], [409, "This referral was already denied"]);
     assert.equal(await statusOf(referralId), "Denied");
   });
 });
 
 describe("referral lists", () => {
-  test("doctors see what they sent and what was sent to them, newest first", async () => {
+  test("doctors see what waits for them, what they sent and what was sent to them, newest first", async () => {
+    type Row = { referralId: number; dateIssued: string; referringDoctorId: number; primaryDoctorId: number; specialistDoctorId: number; status: string };
+    const isNewestFirst = (rows: Row[]) => {
+      const order = rows.map((r) => [r.dateIssued, r.referralId] as const);
+      const sorted = [...order].sort(([dateA, idA], [dateB, idB]) => (dateA === dateB ? idB - idA : dateA < dateB ? 1 : -1));
+      assert.deepEqual(order, sorted);
+    };
+
     const all = await ray.get("/api/doctor/referrals");
     assert.equal(all.status, 200);
+    assert.deepEqual(Object.keys(all.body), ["toApprove", "sent", "received"]);
     assert.ok(all.body.sent.length > 0);
-    assert.ok(all.body.sent.every((r: { referringDoctorId: number }) => r.referringDoctorId === rayId));
-    assert.deepEqual(all.body.received, []);
+    assert.ok(all.body.sent.every((r: Row) => r.referringDoctorId === rayId));
+    assert.deepEqual([all.body.toApprove, all.body.received], [[], []]);
     for (const r of all.body.sent) assert.deepEqual(Object.keys(r), DOCTOR_KEYS);
-    const order = all.body.sent.map((r: { dateIssued: string; referralId: number }) => [r.dateIssued, r.referralId]);
-    const newestFirst = [...order].sort(([dateA, idA], [dateB, idB]) => (dateA === dateB ? idB - idA : dateA < dateB ? 1 : -1));
-    assert.deepEqual(order, newestFirst);
+    isNewestFirst(all.body.sent);
 
-    const received = await dan.get("/api/doctor/referrals?view=received");
-    assert.deepEqual(received.body.sent, []);
-    assert.ok(received.body.received.every((r: { specialistDoctorId: number }) => r.specialistDoctorId === ids.doctor));
-    assert.deepEqual((await ray.get("/api/doctor/referrals?view=sent")).body.sent, all.body.sent);
-    assert.equal((await ray.get("/api/doctor/referrals?view=everything")).status, 400);
+    // the primary doctor gets what others sent for her patients, not her own referrals
+    const primary = await list(paige);
+    assert.ok(primary.toApprove.length > 0);
+    assert.ok(primary.toApprove.every((r: Row) => r.primaryDoctorId === paigeId && r.referringDoctorId !== paigeId));
+    isNewestFirst(primary.toApprove);
+
+    // the specialist only gets referrals the primary doctor approved
+    const specialist = await list(dan);
+    assert.deepEqual([specialist.toApprove, specialist.sent], [[], []]);
+    assert.ok(specialist.received.length > 0);
+    assert.ok(specialist.received.every((r: Row) => r.specialistDoctorId === ids.doctor && r.status === "Approved"));
+    isNewestFirst(specialist.received);
+
+    // the old view filter is gone, so it changes nothing
+    assert.deepEqual((await ray.get("/api/doctor/referrals?view=received")).body, all.body);
+  });
+
+  test("a specialist sees a referral only once the primary doctor approves it", async () => {
+    const pending = await referral(await rayPatient());
+    const denied = await referral(await rayPatient());
+    const received = async () => (await list(dan)).received.map((r: { referralId: number }) => r.referralId);
+    assert.equal((await received()).includes(pending), false);
+    await decide(paige, denied, "Denied", "Not needed yet");
+    await decide(paige, pending, "Approved");
+    const now = await received();
+    assert.deepEqual([now.includes(pending), now.includes(denied)], [true, false]);
   });
 
   test("a doctor can't read referrals they aren't part of", async () => {
-    assert.deepEqual((await una.get("/api/doctor/referrals")).body, { sent: [], received: [] });
-    assert.deepEqual((await una.get(`/api/doctor/referrals?doctorId=${ids.doctor}`)).body, { sent: [], received: [] });
+    const empty = { toApprove: [], sent: [], received: [] };
+    assert.deepEqual(await list(una), empty);
+    assert.deepEqual((await una.get(`/api/doctor/referrals?doctorId=${ids.doctor}`)).body, empty);
     for (const [name, client, status] of others) {
       assert.equal((await client.get("/api/doctor/referrals")).status, status, name);
     }
   });
 
   test("each status shows as stored, with expired worked out from the date", async () => {
+    type Row = { patientId: number; status: string; expired: boolean; dateIssued: string; expirationDate: string; requestReason: string; denialReason: string | null };
     const patientId = await rayPatient("Stella");
-    await insertReferral(patientId, "Approved", dayFrom(today, -100), dayFrom(today, -1));
+    // only the primary doctor's own referral can be stored already Approved and expired
+    await insertReferral(patientId, "Approved", dayFrom(today, -100), dayFrom(today, -1), paigeId);
     await insertReferral(patientId, "Denied", dayFrom(today, -10), dayFrom(today, 80));
     await insertReferral(patientId, "Pending", today, today);
-    const mine = (await dan.get("/api/doctor/referrals?view=received")).body.received.filter((r: { patientId: number }) => r.patientId === patientId);
-    assert.deepEqual(
-      mine.map((r: { status: string; expired: boolean; dateIssued: string; expirationDate: string }) => [r.status, r.expired, r.dateIssued, r.expirationDate]),
-      [
-        ["Pending", false, today, today],
-        ["Denied", false, dayFrom(today, -10), dayFrom(today, 80)],
-        ["Approved", true, dayFrom(today, -100), dayFrom(today, -1)],
-      ]
-    );
+    const stella = (rows: Row[]) =>
+      rows.filter((r) => r.patientId === patientId).map((r) => [r.status, r.expired, r.dateIssued, r.expirationDate, r.requestReason, r.denialReason]);
+
+    assert.deepEqual(stella((await list(paige)).toApprove), [
+      ["Pending", false, today, today, "Needs a specialist", null],
+      ["Denied", false, dayFrom(today, -10), dayFrom(today, 80), "Needs a specialist", "Not needed yet"],
+    ]);
+    const expired = ["Approved", true, dayFrom(today, -100), dayFrom(today, -1), "Needs a specialist", null];
+    assert.deepEqual(stella((await list(paige)).sent), [expired]);
+    assert.deepEqual(stella((await list(dan)).received), [expired]);
   });
 
-  test("patients see only their own referrals", async () => {
-    await app.db.query(`INSERT INTO patient_doctor (patient_id, doctor_id) VALUES ($1, $2)`, [ids.patient, rayId]);
+  test("patients see only their own referrals, with the status but not the reasons", async () => {
+    await app.db.query(`INSERT INTO patient_doctor (patient_id, doctor_id, is_primary) VALUES ($1, $2, true), ($1, $3, false)`, [ids.patient, paigeId, rayId]);
     const own = await referral(ids.patient);
     const res = await pat.get(`/api/patient/${ids.patient}/referrals`);
     assert.equal(res.status, 200);
     assert.deepEqual(res.body.map((r: { referralId: number }) => r.referralId), [own]);
     assert.deepEqual(Object.keys(res.body[0]), PATIENT_KEYS);
     assert.deepEqual([res.body[0].referringDoctorName, res.body[0].specialistName, res.body[0].status], ["Ray Tester", "Dan Doctor", "Pending"]);
+
+    await decide(paige, own, "Denied", "Wait for the stress test results");
+    const denied = await pat.get(`/api/patient/${ids.patient}/referrals`);
+    assert.deepEqual([denied.body[0].status, Object.keys(denied.body[0])], ["Denied", PATIENT_KEYS]);
+    assert.doesNotMatch(JSON.stringify(denied.body), /Chest pain|stress test/);
 
     const someoneElse = await rayPatient();
     assert.equal((await pat.get(`/api/patient/${someoneElse}/referrals`)).status, 403);
@@ -371,20 +493,19 @@ describe("referral lists", () => {
 
   test("lists don't include contact or login details", async () => {
     const bodies = JSON.stringify([(await dan.get("/api/doctor/referrals")).body, (await pat.get(`/api/patient/${ids.patient}/referrals`)).body]);
-    assert.doesNotMatch(bodies, /visit@test\.org|713-555-8800|1980-05-05|password|username/i);
+    assert.doesNotMatch(bodies, /visit@test\.org|7135558800|1980-05-05|password|username/i);
   });
 
-  test("the specialist list leaves out the doctor asking and anyone inactive", async () => {
+  test("the specialist list only has specialties that need a referral, and leaves out the doctor asking and anyone inactive", async () => {
     const res = await ray.get("/api/doctor/specialists");
     assert.equal(res.status, 200);
     const byId = new Map(res.body.map((d: { doctorId: number }) => [d.doctorId, d]));
     assert.equal(byId.has(rayId), false);
     assert.equal(byId.has(ivyId), false);
-    assert.deepEqual((byId.get(ids.doctor) as { specialties: unknown }).specialties, [
-      { specialtyId: ids.cardiology, name: "Cardiology", requiresReferral: true },
-      { specialtyId: ids.familyMedicine, name: "Family Medicine", requiresReferral: false },
-    ]);
-    assert.deepEqual((byId.get(halId) as { specialties: { name: string }[] }).specialties.map((s) => s.name), ["Family Medicine"]);
+    assert.deepEqual((byId.get(ids.doctor) as { specialties: unknown }).specialties, [{ specialtyId: ids.cardiology, name: "Cardiology", requiresReferral: true }]);
+    assert.deepEqual((byId.get(caraId) as { specialties: unknown }).specialties, [{ specialtyId: ids.cardiology, name: "Cardiology", requiresReferral: true }]);
+    // Hal's Cardiology is inactive and Una and Paige only do Family Medicine
+    for (const doctorId of [halId, unaId, paigeId]) assert.equal(byId.has(doctorId), false, String(doctorId));
     assert.equal((await pat.get("/api/doctor/specialists")).status, 403);
   });
 });
@@ -393,7 +514,7 @@ describe("booking with referrals", () => {
   test("only an approved referral that's still valid lets the patient book", async () => {
     const [pending, denied, lapsed, good] = [await rayPatient(), await rayPatient(), await rayPatient(), await rayPatient()];
     await referral(pending);
-    await decide(dan, await referral(denied), "Denied");
+    await decide(paige, await referral(denied), "Denied", "Not needed yet");
     await insertReferral(lapsed, "Approved", today, dayFrom(monday(0), -1));
     const goodReferral = await approved(good);
 
@@ -429,17 +550,21 @@ describe("booking with referrals", () => {
   test("a booking waiting on an approval in progress uses the approved referral", async () => {
     const patientId = await rayPatient();
     const referralId = await referral(patientId);
-    const res = await whileHeld(`UPDATE referral SET status = 'Approved' WHERE referral_id = $1`, referralId, () =>
-      book(mia, { patientId, date: monday(3), timeSlotId: slots[0], referralId })
+    const res = await whileHeld(
+      `UPDATE referral SET status = 'Approved' WHERE referral_id = $1`,
+      referralId,
+      () => book(mia, { patientId, date: monday(3), timeSlotId: slots[0], referralId }),
+      paigeId
     );
     assert.equal(res.status, 201, JSON.stringify(res.body));
     assert.equal(res.body.referralId, referralId);
   });
 
-  test("a booking waiting on a referral that stops being approved doesn't use it", async () => {
+  // an approval is final, so ending the referral early is the change that can stop it from covering a visit
+  test("a booking waiting on a referral that stops being valid for the date doesn't use it", async () => {
     const patientId = await rayPatient();
     const referralId = await approved(patientId);
-    const res = await whileHeld(`UPDATE referral SET status = 'Denied' WHERE referral_id = $1`, referralId, () =>
+    const res = await whileHeld(`UPDATE referral SET expiration_date = date_issued WHERE referral_id = $1`, referralId, () =>
       book(mia, { patientId, date: monday(4), timeSlotId: slots[0], referralId })
     );
     assert.equal(res.status, 409);
@@ -460,7 +585,7 @@ describe("booking with referrals", () => {
         if (rows[0].n > 0) break;
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
-      const decision = decide(dan, pending, "Denied");
+      const decision = decide(paige, pending, "Denied", "Not needed yet");
       // the decision is stuck behind the booking's lock on the patient's referrals
       await waitForLockWait(app.db);
       const [booked, decided] = await Promise.all([booking, decision]);
@@ -474,7 +599,7 @@ describe("booking with referrals", () => {
     const patientId = await rayPatient();
     const referralId = await referral(patientId);
     const [decided, booked] = await Promise.all([
-      decide(dan, referralId, "Approved"),
+      decide(paige, referralId, "Approved"),
       book(mia, { patientId, date: monday(6), timeSlotId: slots[0], referralId }),
     ]);
     assert.equal(decided.status, 200);
@@ -489,7 +614,7 @@ describe("deactivation while a referral is being created", () => {
   let admin: TestClient;
   let samId: number;
   const deactivate = (employeeId: number, isActive: boolean) => admin.patch(`/api/admin/employees/${employeeId}/status`, { isActive });
-  const toSam = (patientId: number) => ({ patientId, specialistDoctorId: samId, specialtyId: ids.cardiology });
+  const toSam = (patientId: number) => ({ patientId, specialistDoctorId: samId, specialtyId: ids.cardiology, reason: REASON });
   const referralsTo = async (patientId: number, specialistId: number) =>
     (await app.db.query(`SELECT count(*)::int AS n FROM referral WHERE patient_id = $1 AND specialist_doctor_id = $2`, [patientId, specialistId])).rows[0].n;
 
@@ -547,7 +672,7 @@ describe("deactivation while a referral is being created", () => {
     const rexId = await addDoctor(app.db, "Rex", ids.mainOffice);
     const rex = await app.loginStaff(rexId);
     const patientId = await addPatient(app.db, "Remi");
-    await app.db.query(`INSERT INTO patient_doctor (patient_id, doctor_id) VALUES ($1, $2)`, [patientId, rexId]);
+    await app.db.query(`INSERT INTO patient_doctor (patient_id, doctor_id, is_primary) VALUES ($1, $2, true), ($1, $3, false)`, [patientId, paigeId, rexId]);
 
     const doctorGone = await whileHeld(`UPDATE employee SET is_active = false WHERE employee_id = $1`, rexId, () => refer(rex, toCardiology(patientId)));
     assert.deepEqual([doctorGone.status, doctorGone.body.error], [403, "Your account is no longer active"]);

@@ -21,9 +21,9 @@ const PUBLIC_DATA = `
 
   -- 5 Ella has no schedules, 6 Ivan is inactive, 7 Sara has a mix of valid and invalid schedules
   INSERT INTO employee (first_name, last_name, dob, employee_type_id, phone, email, office_id, is_active) VALUES
-    ('Ella', 'Early', '1982-02-02', 2, '713-555-1005', 'ella@test.org', ${ids.westsideOffice}, true),
-    ('Ivan', 'Inactive', '1970-06-06', 2, '713-555-1006', 'ivan@test.org', ${ids.westsideOffice}, false),
-    ('Sara', 'Second', '1988-08-08', 2, '713-555-1007', 'sara@test.org', ${ids.mainOffice}, true);
+    ('Ella', 'Early', '1982-02-02', 2, '7135551005', 'ella@test.org', ${ids.westsideOffice}, true),
+    ('Ivan', 'Inactive', '1970-06-06', 2, '7135551006', 'ivan@test.org', ${ids.westsideOffice}, false),
+    ('Sara', 'Second', '1988-08-08', 2, '7135551007', 'sara@test.org', ${ids.mainOffice}, true);
 
   INSERT INTO doctor VALUES
     (${ella}, 'TX-ELLA5', 'TX', '2030-01-01', '5555555555', 'EE5555555'),
@@ -48,8 +48,8 @@ const PUBLIC_DATA = `
     (${sara}, 'Sunday', ${ids.mainOffice}, ${ids.retiredSpecialty}, ${ids.morningShift}, true);
 `;
 
-const mainStreet = { officeId: ids.mainOffice, name: "Main Street Clinic", street: "1 Main St", apt: null, city: "Houston", state: "TX", zip: "77001", phone: "713-555-0100" };
-const westside = { officeId: ids.westsideOffice, name: "Westside Clinic", street: "2 West St", apt: null, city: "Houston", state: "TX", zip: "77002", phone: "713-555-0200" };
+const mainStreet = { officeId: ids.mainOffice, name: "Main Street Clinic", street: "1 Main St", apt: null, city: "Houston", state: "TX", zip: "77001", phone: "7135550100" };
+const westside = { officeId: ids.westsideOffice, name: "Westside Clinic", street: "2 West St", apt: null, city: "Houston", state: "TX", zip: "77002", phone: "7135550200" };
 
 const familyMedicine = (isPrimary: boolean) => ({ specialtyId: ids.familyMedicine, name: "Family Medicine", isPrimary });
 const cardiology = (isPrimary: boolean) => ({ specialtyId: ids.cardiology, name: "Cardiology", isPrimary });
@@ -203,7 +203,7 @@ describe("public API safety", () => {
       ...rows.map((r) => r.password_hash),
       "1975-05-05", "1982-02-02", "1988-08-08",
       "@test.org", "713-555-100", "TX-DAN1", "TX-ELLA5", "1111111111", "5555555555", "EE5555555",
-      "Pat", "713-555-9000",
+      "Pat", "7135559000",
     ];
     for (const value of privateValues) assert.equal(text.includes(value), false, value);
   });

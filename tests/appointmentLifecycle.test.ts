@@ -89,8 +89,13 @@ describe("check in", () => {
     assert.deepEqual([res.body.appointmentId, res.body.status, res.body.checkedIn, res.body.checkedOutAt], [id, "Scheduled", true, null]);
     assert.equal(res.body.checkedInAt, `${today} 12:00`);
     assert.equal((await row(id)).status, "Scheduled");
-    // check in alone doesn't change anything the history tracks
-    assert.equal(await historyCount(app.db, id), 1);
+    // the history keeps the check in and who did it, with the status unchanged
+    const history = await app.db.query(
+      `SELECT old_status, new_status, checked_in_at IS NOT NULL AS checked_in, changed_by FROM appointment_history WHERE appointment_id = $1 AND operation = 'UPDATE'`,
+      [id]
+    );
+    assert.deepEqual(history.rows, [{ old_status: "Scheduled", new_status: "Scheduled", checked_in: true, changed_by: ids.receptionist }]);
+    assert.equal(await historyCount(app.db, id), 2);
   });
 
   test("checking in again keeps the first time", async () => {
@@ -155,8 +160,15 @@ describe("check out", () => {
     assert.deepEqual(after.checkedInAt, before);
     assert.ok(after.checkedOutAt! >= after.checkedInAt!);
 
-    const history = await app.db.query(`SELECT old_status, new_status FROM appointment_history WHERE appointment_id = $1 AND operation = 'UPDATE'`, [id]);
-    assert.deepEqual(history.rows, [{ old_status: "Scheduled", new_status: "Completed" }]);
+    // the check in and the check out are each recorded
+    const history = await app.db.query(
+      `SELECT old_status, new_status, checked_out_at IS NOT NULL AS checked_out FROM appointment_history WHERE appointment_id = $1 AND operation = 'UPDATE' ORDER BY history_id`,
+      [id]
+    );
+    assert.deepEqual(history.rows, [
+      { old_status: "Scheduled", new_status: "Scheduled", checked_out: false },
+      { old_status: "Scheduled", new_status: "Completed", checked_out: true },
+    ]);
   });
 
   test("a visit has to be checked in first, and checks out only once", async () => {
@@ -169,7 +181,8 @@ describe("check out", () => {
     const again = await remy.patch(path(id, "check-out"));
     assert.deepEqual([again.status, again.body.error], [409, "Only scheduled appointments can be checked out. This one is Completed."]);
     assert.deepEqual(await row(id), done);
-    assert.equal(await historyCount(app.db, id), 2);
+    // booked, checked in and checked out once
+    assert.equal(await historyCount(app.db, id), 3);
   });
 
   test("a visit checked in the day before can still be checked out", async () => {
@@ -242,14 +255,14 @@ describe("simultaneous changes", () => {
   test("two check ins at once keep one time", async () => {
     const id = await visit(today, slots.late);
     assert.deepEqual(statuses(await Promise.all([rita.patch(path(id, "check-in")), remy.patch(path(id, "check-in"))])), [200, 409]);
-    assert.equal(await historyCount(app.db, id), 1);
+    assert.equal(await historyCount(app.db, id), 2);
   });
 
   test("two check outs at once complete the visit once", async () => {
     const id = await visit(today, slots.morning);
     await rita.patch(path(id, "check-in"));
     assert.deepEqual(statuses(await Promise.all([rita.patch(path(id, "check-out")), remy.patch(path(id, "check-out"))])), [200, 409]);
-    assert.equal(await historyCount(app.db, id), 2);
+    assert.equal(await historyCount(app.db, id), 3);
   });
 
   test("a check in and a cancel at once leave one of them", async () => {
@@ -258,7 +271,8 @@ describe("simultaneous changes", () => {
     assert.deepEqual(statuses(results), [200, 409]);
     const after = await row(id);
     assert.ok((after.status === "Scheduled" && after.checkedInAt) || (after.status === "Cancelled" && !after.checkedInAt), JSON.stringify(after));
-    assert.equal(await historyCount(app.db, id), after.status === "Cancelled" ? 2 : 1);
+    // only the change that won is recorded after the booking
+    assert.equal(await historyCount(app.db, id), 2);
   });
 
   test("a check in and a No Show at once leave one of them", async () => {
@@ -317,6 +331,7 @@ describe("simultaneous changes", () => {
     }
     assert.deepEqual([res.status, res.body.error], [409, "Only scheduled appointments can be checked out. This one is Cancelled."]);
     assert.deepEqual([(await row(id)).status, (await row(id)).checkedOutAt], ["Cancelled", null]);
-    assert.equal(await historyCount(app.db, id), 2);
+    // booked, checked in and cancelled, with no check out
+    assert.equal(await historyCount(app.db, id), 3);
   });
 });

@@ -22,7 +22,7 @@ before(async () => {
     firstName: "Olive",
     lastName: "Other",
     dob: "1995-02-02",
-    phone: "713-555-9100",
+    phone: "7135559100",
     email: "olive@test.org",
     password: TEST_PASSWORD,
   });
@@ -99,10 +99,10 @@ describe("patient profile", () => {
     assert.equal(before.status, 200);
     assert.equal(before.body.email, "olive@test.org");
 
-    const update = { phone: "713-555-9111", email: "olive.new@test.org", address: "9 Elm St", gender: null };
+    const update = { phone: "7135559111", email: "olive.new@test.org", address: "9 Elm St", gender: null };
     assert.equal((await olive.put(`/api/patient/${OLIVE}/profile`, update)).status, 204);
     const after = await olive.get(`/api/patient/${OLIVE}/profile`);
-    assert.equal(after.body.phone, "713-555-9111");
+    assert.equal(after.body.phone, "7135559111");
     assert.equal(after.body.address, "9 Elm St");
 
     const login = await app.client().post("/api/auth/patient/login", { patientId: OLIVE, email: "olive.new@test.org", password: TEST_PASSWORD });
@@ -112,7 +112,7 @@ describe("patient profile", () => {
   });
 
   test("emergency contacts can be added, edited, and removed by their own patient only", async () => {
-    const contact = { firstName: "Sam", lastName: "Other", relationship: "Brother", phoneNumber: "713-555-9200", isPrimary: true };
+    const contact = { firstName: "Sam", lastName: "Other", relationship: "Brother", phoneNumber: "7135559200", isPrimary: true };
     assert.equal((await olive.post(`/api/patient/${OLIVE}/emergency-contacts`, contact)).status, 201);
     assert.equal((await olive.post(`/api/patient/${OLIVE}/emergency-contacts`, { ...contact, firstName: "Ann", isPrimary: true })).status, 201);
 
@@ -120,7 +120,7 @@ describe("patient profile", () => {
     assert.deepEqual(contacts.map((c: { firstName: string; isPrimary: boolean }) => [c.firstName, c.isPrimary]), [["Ann", true], ["Sam", false]]);
     const sam = contacts.find((c: { firstName: string }) => c.firstName === "Sam").emergencyContactId;
 
-    assert.equal((await olive.put(`/api/patient/${OLIVE}/emergency-contacts/${sam}`, { ...contact, phoneNumber: "713-555-9201", isPrimary: false })).status, 204);
+    assert.equal((await olive.put(`/api/patient/${OLIVE}/emergency-contacts/${sam}`, { ...contact, phoneNumber: "7135559201", isPrimary: false })).status, 204);
     // the contact belongs to Olive, so it isn't found under Pat's own path
     assert.equal((await pat.put(`/api/patient/${ids.patient}/emergency-contacts/${sam}`, contact)).status, 404);
     assert.equal((await olive.delete(`/api/patient/${OLIVE}/emergency-contacts/${sam}`)).status, 204);
@@ -259,9 +259,9 @@ describe("staff profile", () => {
     assert.equal(own.body.nurse.nursingLevel, "RN");
     assert.equal(own.body.doctor, null);
 
-    const update = await nurse.put(`/api/staff/${ids.nurse}/profile`, { phone: "713-555-3333" });
-    assert.deepEqual([update.status, update.body], [200, { phone: "713-555-3333" }]);
-    assert.equal((await nurse.get(`/api/staff/${ids.nurse}/profile`)).body.phone, "713-555-3333");
+    const update = await nurse.put(`/api/staff/${ids.nurse}/profile`, { phone: "7135553333" });
+    assert.deepEqual([update.status, update.body], [200, { phone: "7135553333" }]);
+    assert.equal((await nurse.get(`/api/staff/${ids.nurse}/profile`)).body.phone, "7135553333");
     assert.equal((await nurse.put(`/api/staff/${ids.nurse}/profile`, { phone: " " })).status, 400);
 
     const doctorProfile = (await doctor.get(`/api/staff/${ids.doctor}/profile`)).body.doctor;
@@ -306,7 +306,7 @@ describe("employee patient management", () => {
     assert.equal(list.status, 200);
     assert.ok(list.body.some((p: { patientId: number }) => p.patientId === OLIVE));
 
-    const created = await receptionist.post("/api/patients", { firstName: "Walk", lastName: "In", dob: "1988-08-08", phone: "713-555-9300" });
+    const created = await receptionist.post("/api/patients", { firstName: "Walk", lastName: "In", dob: "1988-08-08", phone: "7135559300" });
     assert.equal(created.status, 201);
     assert.equal(created.body.firstName, "Walk");
     assert.equal(created.body.isActive, true);

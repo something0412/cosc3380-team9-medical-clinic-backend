@@ -3,6 +3,7 @@ import { after, before, describe, test } from "node:test";
 import { startTestApp } from "../helpers/testApp.js";
 import type { TestClient } from "../helpers/testApp.js";
 import { ids, resetDatabase } from "../helpers/testDb.js";
+import { asEmployee } from "../helpers/appointmentData.js";
 
 let app: Awaited<ReturnType<typeof startTestApp>>;
 let admin: TestClient;
@@ -26,7 +27,7 @@ async function created(res: Promise<{ status: number; body: any }>) {
 }
 
 function newOffice(name: string) {
-  return created(admin.post("/api/admin/offices", { name, street: "10 Test St", city: "Austin", state: "TX", zip: "78701", phone: "512-555-0100" }));
+  return created(admin.post("/api/admin/offices", { name, street: "10 Test St", city: "Austin", state: "TX", zip: "78701", phone: "5125550100" }));
 }
 
 function newSpecialty(name: string, requiresReferral = false) {
@@ -48,7 +49,7 @@ function employeeBody(overrides: object = {}) {
     lastName: `Tester${counter}`,
     dob: "1985-04-04",
     email: `integration${counter}@test.org`,
-    phone: "713-555-3000",
+    phone: "7135553000",
     employeeTypeId: 4,
     officeId: ids.mainOffice,
     ...overrides,
@@ -353,7 +354,8 @@ describe("D: schedules and booked appointments", () => {
     await newSchedule(doctor.employeeId, "Tuesday", ids.mainOffice, ids.familyMedicine, ids.morningShift);
 
     const completed = await bookAppointment({ doctorId: doctor.employeeId, day: "Tuesday", officeId: ids.mainOffice, specialtyId: ids.familyMedicine, timeSlotId: slot.timeSlotId });
-    await app.db.query("UPDATE appointment SET status = 'Completed' WHERE appointment_id = $1", [completed]);
+    // checking out creates the visit invoice, so the billing trigger needs the employee who did it
+    await asEmployee(app.db, ids.receptionist, (client) => client.query("UPDATE appointment SET status = 'Completed' WHERE appointment_id = $1", [completed]));
     await bookAppointment({ doctorId: doctor.employeeId, day: "Tuesday", officeId: ids.mainOffice, specialtyId: ids.familyMedicine, timeSlotId: slot.timeSlotId, weeksAgo: 1 });
 
     const moved = await admin.put(`/api/admin/schedules/${doctor.employeeId}/Tuesday`, { officeId: ids.westsideOffice, specialtyId: ids.familyMedicine, shiftTypeId: ids.morningShift });
@@ -365,7 +367,7 @@ describe("D: schedules and booked appointments", () => {
 describe("E: data integrity", () => {
   test("editing an office or specialty leaves employees, assignments, and appointments alone", async () => {
     const employeesBefore = await rows("SELECT * FROM employee WHERE office_id = $1 ORDER BY employee_id", [ids.westsideOffice]);
-    const edited = await admin.put(`/api/admin/offices/${ids.westsideOffice}`, { name: "Westside Medical Center", street: "2 West St", apt: "Bldg B", city: "Houston", state: "TX", zip: "77002", phone: "713-555-0201" });
+    const edited = await admin.put(`/api/admin/offices/${ids.westsideOffice}`, { name: "Westside Medical Center", street: "2 West St", apt: "Bldg B", city: "Houston", state: "TX", zip: "77002", phone: "7135550201" });
     assert.equal(edited.status, 200);
     assert.deepEqual(await rows("SELECT * FROM employee WHERE office_id = $1 ORDER BY employee_id", [ids.westsideOffice]), employeesBefore);
 

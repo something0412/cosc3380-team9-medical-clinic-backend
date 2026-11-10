@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { after, before, describe, test } from "node:test";
+import { asEmployee } from "./helpers/appointmentData.js";
 import { startTestApp } from "./helpers/testApp.js";
 import type { TestClient, TestResponse } from "./helpers/testApp.js";
 import { TEST_PASSWORD, ids, resetDatabase } from "./helpers/testDb.js";
@@ -37,7 +38,7 @@ const SAMPLE_DATA = `
   INSERT INTO payment_type (name) VALUES ('Credit Card');
   INSERT INTO invoice (patient_id, appointment_id, amount, status) VALUES (1, 2, 150.00, 'Pending'), (2, 3, 80.00, 'Pending');
   INSERT INTO payment (invoice_id, payment_type_id, handled_by, amount_paid) VALUES (1, 1, 4, 50.00);
-  INSERT INTO emergency_contact (patient_id, first_name, last_name, relationship, phone_number, is_primary) VALUES (1, 'Sam', 'Patient', 'Spouse', '713-555-9001', true);
+  INSERT INTO emergency_contact (patient_id, first_name, last_name, relationship, phone_number, is_primary) VALUES (1, 'Sam', 'Patient', 'Spouse', '7135559001', true);
   INSERT INTO insurance (patient_id, provider, policy_number, status) VALUES (1, 'Blue Cross', 'BC-1001', 'Verified');
   INSERT INTO form_type (name, is_required) VALUES ('New Patient Intake', true), ('HIPAA Consent', true);
   INSERT INTO certificate (employee_id, name, issue_date, expiration_date) VALUES (3, 'BLS', '2025-01-01', '2027-01-01');
@@ -85,9 +86,13 @@ const ENDPOINTS: Endpoint[] = [
   { label: "GET /api/doctor/schedule", path: fixed("/api/doctor/schedule"), expect: DOCTOR_ONLY },
   { label: "GET /api/lab/orders", path: fixed("/api/lab/orders"), expect: LAB_ONLY },
   { label: "GET /api/receptionist/appointments", path: fixed("/api/receptionist/appointments"), expect: RECEPTIONIST_ONLY },
-  { label: "GET /api/nurse/appointments", path: fixed("/api/nurse/appointments"), expect: NURSE_ONLY },
+  { label: "GET /api/receptionist/invoices", path: fixed("/api/receptionist/invoices"), expect: RECEPTIONIST_ONLY },
+  { label: "GET /api/receptionist/payment-types", path: fixed("/api/receptionist/payment-types"), expect: RECEPTIONIST_ONLY },
+  // the nurse search needs a date or a name
+  { label: "GET /api/nurse/appointments", path: fixed("/api/nurse/appointments?name=Patient"), expect: NURSE_ONLY },
+  { label: "GET /api/nurse/appointments/1", path: fixed("/api/nurse/appointments/1"), expect: NURSE_ONLY },
+  { label: "GET /api/nurse/my-office", path: fixed("/api/nurse/my-office"), expect: NURSE_ONLY },
   { label: "GET /api/nurse/dashboard", path: fixed("/api/nurse/dashboard"), expect: NURSE_ONLY },
-  { label: "GET /api/nurse/patients", path: fixed("/api/nurse/patients"), expect: NURSE_ONLY },
   { label: "GET /api/nurse/allergy-types", path: fixed("/api/nurse/allergy-types"), expect: NURSE_ONLY },
   { label: "GET /api/nurse/medications", path: fixed("/api/nurse/medications"), expect: NURSE_ONLY },
   { label: "GET /api/nurse/supplies", path: fixed("/api/nurse/supplies"), expect: NURSE_ONLY },
@@ -116,6 +121,8 @@ const ENDPOINTS: Endpoint[] = [
     path: fixed(`/api/patient/${OTHER_PATIENT}/${section}`),
     expect: OTHER_PATIENT_DATA,
   })),
+  { label: "GET /api/patient/<own>/visits/2", path: fixed(`/api/patient/${ids.patient}/visits/2`), expect: OWN_PATIENT },
+  { label: "GET /api/patient/<other>/visits/3", path: fixed(`/api/patient/${OTHER_PATIENT}/visits/3`), expect: OTHER_PATIENT_DATA },
   { label: "GET /api/staff/<own>/profile", path: (role) => `/api/staff/${role.id}/profile`, expect: OWN_STAFF },
   {
     label: "GET /api/staff/<other>/profile",
@@ -140,8 +147,22 @@ const ENDPOINTS: Endpoint[] = [
     "/api/admin/invoices/1",
     "/api/admin/payments",
     "/api/admin/payment-types",
-    "/api/admin/billable-appointments",
+    "/api/admin/invoices/1/history",
+    "/api/admin/refund-requests",
+    "/api/admin/fees",
+    "/api/admin/patients",
+    `/api/admin/patients/${ids.patient}`,
+    "/api/admin/dashboard",
+    "/api/admin/analytics/appointments",
+    "/api/admin/analytics/billing",
+    "/api/admin/data-reports/options",
   ].map((path) => ({ label: `GET ${path}`, path: fixed(path), expect: ADMIN_ONLY })),
+  // the data reports need a date range
+  ...["missed-appointments", "unpaid-balances", "schedule-utilization"].map((report) => ({
+    label: `GET /api/admin/data-reports/${report}`,
+    path: fixed(`/api/admin/data-reports/${report}?from=2025-01-01&to=2030-12-31`),
+    expect: ADMIN_ONLY,
+  })),
 ];
 
 // keeps the first few items of every list so the output stays small
@@ -156,7 +177,7 @@ function sample(value: unknown): unknown {
   return value;
 }
 
-const statusIcon = (status: number) => (status === 200 ? "✅ 200" : status === 401 ? "🔒 401" : status === 403 ? "⛔ 403" : `⚠️ ${status}`);
+const statusIcon = (status: number) => (status === 200 ? "OK 200" : String(status));
 
 let app: Awaited<ReturnType<typeof startTestApp>>;
 const roles = {} as Record<RoleName, Role>;
@@ -164,6 +185,9 @@ const results = {} as Record<RoleName, Record<string, TestResponse>>;
 let passwordHashes: string[] = [];
 
 before(async () => {
+  // made first so the summary can still be written if setup fails
+  await rm(outputDir, { recursive: true, force: true });
+  await mkdir(outputDir, { recursive: true });
   await resetDatabase();
   app = await startTestApp();
   const admin = await app.loginStaff(ids.admin);
@@ -176,14 +200,15 @@ before(async () => {
     firstName: "Olive",
     lastName: "Other",
     dob: "1995-02-02",
-    phone: "713-555-9100",
+    phone: "7135559100",
     email: "olive@test.org",
     password: TEST_PASSWORD,
   });
   assert.equal(signup.status, 201);
   assert.equal(signup.body.patientId, OTHER_PATIENT);
 
-  await app.db.query(SAMPLE_DATA);
+  // the billing triggers need to know which employee added the invoices and payment
+  await asEmployee(app.db, ids.admin, (client) => client.query(SAMPLE_DATA));
 
   // the fixtures have no lab technician, so one is added the same way the Admin portal would
   const labType = await app.db.query(`INSERT INTO employee_types (type_name) VALUES ('Lab Technician') RETURNING employee_type_id AS id`);
@@ -192,7 +217,7 @@ before(async () => {
     lastName: "Lab",
     dob: "1992-04-04",
     email: "lee@test.org",
-    phone: "713-555-1004",
+    phone: "7135551004",
     employeeTypeId: labType.rows[0].id,
     officeId: ids.mainOffice,
   });
@@ -210,19 +235,25 @@ before(async () => {
 
   const hashes = await app.db.query(`SELECT password_hash FROM employee_creds UNION ALL SELECT password_hash FROM patient_creds`);
   passwordHashes = hashes.rows.map((r) => r.password_hash);
-
-  await rm(outputDir, { recursive: true, force: true });
-  await mkdir(outputDir, { recursive: true });
 });
 
 after(async () => {
-  // permission matrix across every role
+  try {
+    await writeSummary();
+  } finally {
+    // close even when the summary can't be written, or the test process never exits
+    await app?.close();
+  }
+});
+
+// permission matrix across every role
+async function writeSummary() {
   const header = `| Endpoint | ${ROLE_NAMES.join(" | ")} |\n|---|${ROLE_NAMES.map(() => "---").join("|")}|`;
   const rows = ENDPOINTS.map((endpoint) => {
     const cells = ROLE_NAMES.map((name) => {
       const status = results[name]?.[endpoint.label]?.status;
-      if (status === undefined) return "—";
-      return status === endpoint.expect[name] ? statusIcon(status) : `❗ ${status} (expected ${endpoint.expect[name]})`;
+      if (status === undefined) return "not run";
+      return status === endpoint.expect[name] ? statusIcon(status) : `UNEXPECTED ${status} (expected ${endpoint.expect[name]})`;
     });
     return `| \`${endpoint.label}\` | ${cells.join(" | ")} |`;
   });
@@ -231,7 +262,7 @@ after(async () => {
     "",
     `Generated by \`tests/roleAccess.test.ts\` on ${new Date().toISOString()} against the local test database.`,
     "",
-    "✅ data returned · 🔒 401 not logged in as the right kind of user · ⛔ 403 logged in but not allowed · ❗ unexpected",
+    "OK 200 data returned, 401 not logged in as the right kind of user, 403 logged in but not allowed, UNEXPECTED a status the test didn't expect",
     "",
     header,
     ...rows,
@@ -239,9 +270,9 @@ after(async () => {
     "The data each role got back is in the `<role>.json` files next to this one.",
     "",
   ].join("\n");
+  await mkdir(outputDir, { recursive: true });
   await writeFile(new URL("summary.md", outputDir), summary);
-  await app?.close();
-});
+}
 
 describe("role access", () => {
   for (const name of ROLE_NAMES) {

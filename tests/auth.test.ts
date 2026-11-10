@@ -20,16 +20,25 @@ const ADMIN_ENDPOINTS: [string, string, unknown?][] = [
   ["GET", "/api/admin/employee-types"],
   ["GET", "/api/admin/employees"],
   ["GET", "/api/admin/employees/1"],
-  ["POST", "/api/admin/employees", { firstName: "No", lastName: "Access", dob: "1990-01-01", email: "no@test.org", phone: "1", employeeTypeId: 4, officeId: 1 }],
-  ["PUT", "/api/admin/employees/4", { firstName: "Changed", lastName: "Name", dob: "1990-07-07", email: "rita@test.org", phone: "1", employeeTypeId: 4, officeId: 2 }],
+  ["POST", "/api/admin/employees", { firstName: "No", lastName: "Access", dob: "1990-01-01", email: "no@test.org", phone: "7135550001", employeeTypeId: 4, officeId: 1 }],
+  ["PUT", "/api/admin/employees/4", { firstName: "Changed", lastName: "Name", dob: "1990-07-07", email: "rita@test.org", phone: "7135550001", employeeTypeId: 4, officeId: 2 }],
   ["PATCH", "/api/admin/employees/4/status", { isActive: false }],
   ["PATCH", "/api/admin/employees/2/login-status", { loginActive: false }],
   ["PUT", "/api/admin/employees/2/password", { password: "Changed-Pass-1" }],
   ["POST", "/api/admin/employees/4/login", { username: "rita.login", password: "Rita-Pass-123" }],
+  ["GET", "/api/admin/staff"],
+  ["GET", "/api/admin/staff/options"],
+  ["POST", "/api/admin/staff", { firstName: "No", lastName: "Access", dob: "1990-01-01", email: "nostaff@test.org", phone: "7135550002", employeeTypeId: 4, officeId: 1, password: "Staff-Pass-123" }],
+  ["PUT", "/api/admin/staff/4", { firstName: "Changed", lastName: "Name", phone: "7135550003", email: "rita@test.org", officeId: 2 }],
+  ["PATCH", "/api/admin/staff/4/status", { isActive: false }],
+  ["GET", "/api/admin/patients"],
+  ["GET", "/api/admin/patients/1"],
+  ["PUT", "/api/admin/patients/1", { doctorId: 2, newPassword: "Changed-Pass-1" }],
+  ["PATCH", "/api/admin/patients/1/status", { isActive: false }],
   ["GET", "/api/admin/offices"],
   ["GET", "/api/admin/offices/1"],
-  ["POST", "/api/admin/offices", { name: "New", street: "1 St", city: "Austin", state: "TX", zip: "78701", phone: "512-555-0100" }],
-  ["PUT", "/api/admin/offices/2", { name: "Changed", street: "1 St", city: "Austin", state: "TX", zip: "78701", phone: "512-555-0100" }],
+  ["POST", "/api/admin/offices", { name: "New", street: "1 St", city: "Austin", state: "TX", zip: "78701", phone: "5125550100" }],
+  ["PUT", "/api/admin/offices/2", { name: "Changed", street: "1 St", city: "Austin", state: "TX", zip: "78701", phone: "5125550100" }],
   ["PATCH", "/api/admin/offices/3/status", { isActive: true }],
   ["GET", "/api/admin/specialties"],
   ["GET", "/api/admin/specialties/1"],
@@ -47,12 +56,27 @@ const ADMIN_ENDPOINTS: [string, string, unknown?][] = [
   ["PUT", "/api/admin/shift-types/1", { name: "Changed", startTime: "08:00", endTime: "12:00" }],
   ["PATCH", "/api/admin/shift-types/1/status", { isActive: false }],
   ["POST", "/api/admin/shift-types/1/time-slots", { startTime: "08:00", endTime: "08:30" }],
+  ["PUT", "/api/admin/time-slots/1", { startTime: "08:00", endTime: "08:30" }],
+  ["PATCH", "/api/admin/time-slots/1/status", { isActive: false }],
   ["GET", "/api/admin/invoices"],
+  ["GET", "/api/admin/invoices/1/history"],
   ["GET", "/api/admin/payments"],
   ["GET", "/api/admin/payment-types"],
-  ["GET", "/api/admin/billable-appointments"],
-  ["POST", "/api/admin/invoices", { appointmentId: 1, amount: "50.00" }],
+  ["GET", "/api/admin/refund-requests"],
   ["POST", "/api/admin/invoices/1/payments", { paymentTypeId: 1, amount: "10.00" }],
+  ["PATCH", "/api/admin/payments/1/approve-refund", { reason: "Paid twice" }],
+  ["PATCH", "/api/admin/payments/1/deny-refund", { reason: "Paid once" }],
+  ["PATCH", "/api/admin/invoices/1/void", { reason: "Wrong visit" }],
+  ["GET", "/api/admin/fees"],
+  ["POST", "/api/admin/fees", { category: "Visit", linkId: 3, price: "90.00" }],
+  ["PUT", "/api/admin/fees/1", { price: "160.00", type: "Primary Care", isActive: true }],
+  ["GET", "/api/admin/dashboard"],
+  ["GET", "/api/admin/analytics/appointments"],
+  ["GET", "/api/admin/analytics/billing"],
+  ["GET", "/api/admin/data-reports/options"],
+  ["GET", "/api/admin/data-reports/missed-appointments?from=2025-01-01&to=2030-12-31"],
+  ["GET", "/api/admin/data-reports/unpaid-balances?from=2025-01-01&to=2030-12-31"],
+  ["GET", "/api/admin/data-reports/schedule-utilization?from=2025-01-01&to=2030-12-31"],
 ];
 
 async function request(client: TestClient, method: string, path: string, body?: unknown) {
@@ -62,7 +86,10 @@ async function request(client: TestClient, method: string, path: string, body?: 
 
 // fingerprint of the data the Admin endpoints can change
 async function dataSnapshot() {
-  const tables = ["employee", "employee_creds", "office", "specialty", "doctor_schedule", "shift_type", "time_slot", "invoice", "payment"];
+  const tables = [
+    "employee", "employee_creds", "office", "specialty", "doctor_schedule", "shift_type", "time_slot", "invoice", "payment",
+    "service_fee", "patient", "patient_creds", "patient_doctor",
+  ];
   const rows = await Promise.all(tables.map((t) => app.db.query(`SELECT md5(COALESCE(string_agg(t::text, '|' ORDER BY t::text), '')) AS hash FROM ${t} t`)));
   return rows.map((r) => r.rows[0].hash).join();
 }

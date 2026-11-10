@@ -34,6 +34,135 @@ COMMENT ON SCHEMA public IS 'standard public schema';
 
 
 --
+-- Name: add_lab_order_line(integer, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.add_lab_order_line(target_invoice integer, order_id integer) RETURNS void
+    LANGUAGE sql
+    SET search_path TO ''
+    AS $$
+    INSERT INTO public.invoice_item (invoice_id, fee_id, category, description, price, lab_order_id)
+    SELECT target_invoice, f.fee_id, 'Lab Test', f.name, f.price, l.lab_order_id
+    FROM public.lab_order l
+    JOIN public.service_fee f ON f.lab_test_type_id = l.lab_test_type_id AND f.is_active
+    WHERE l.lab_order_id = order_id
+    ON CONFLICT (lab_order_id) DO NOTHING;
+$$;
+
+
+--
+-- Name: add_prescription_line(integer, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.add_prescription_line(target_invoice integer, item_id integer) RETURNS void
+    LANGUAGE sql
+    SET search_path TO ''
+    AS $$
+    INSERT INTO public.invoice_item (invoice_id, fee_id, category, description, price, prescription_item_id)
+    SELECT target_invoice, f.fee_id, 'Medication', f.name || ' (' || pi.dosage || ')', f.price, pi.prescription_item_id
+    FROM public.prescription_item pi
+    JOIN public.service_fee f ON f.medication_id = pi.medication_id AND f.is_active
+    WHERE pi.prescription_item_id = item_id
+    ON CONFLICT (prescription_item_id) DO NOTHING;
+$$;
+
+
+--
+-- Name: assign_primary_doctor(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.assign_primary_doctor() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+BEGIN
+    IF NEW.status <> 'Completed' OR OLD.status = 'Completed' THEN
+        RETURN NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.specialty WHERE specialty_id = NEW.specialty_id AND name IN ('Family Medicine', 'Internal Medicine')) THEN
+        RETURN NULL;
+    END IF;
+    IF EXISTS (SELECT 1 FROM public.patient_doctor WHERE patient_id = NEW.patient_id AND is_primary AND is_active) THEN
+        RETURN NULL;
+    END IF;
+
+    INSERT INTO public.patient_doctor (patient_id, doctor_id, is_primary, assigned_date, is_active)
+    VALUES (NEW.patient_id, NEW.doctor_id, true, (now() AT TIME ZONE 'America/Chicago')::date, true)
+    ON CONFLICT (patient_id, doctor_id) DO UPDATE SET is_primary = true, is_active = true, assigned_date = EXCLUDED.assigned_date;
+    RETURN NULL;
+END;
+$$;
+
+
+--
+-- Name: billable_visit_invoice(integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.billable_visit_invoice(visit integer) RETURNS integer
+    LANGUAGE sql
+    SET search_path TO ''
+    AS $$
+    SELECT i.invoice_id FROM public.invoice i
+    WHERE i.appointment_id = visit AND i.status <> 'Void'
+      AND (i.status IN ('Pending', 'Overdue') OR NOT EXISTS (
+          SELECT 1 FROM public.payment p JOIN public.payment_type t ON t.payment_type_id = p.payment_type_id
+          WHERE p.invoice_id = i.invoice_id AND p.status <> 'Refunded' AND t.name <> 'Insurance'
+      ))
+    LIMIT 1;
+$$;
+
+
+--
+-- Name: billing_employee_id(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.billing_employee_id() RETURNS integer
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $_$
+DECLARE
+    value text := current_setting('app.employee_id', true);
+BEGIN
+    IF value IS NULL OR value = '' THEN
+        IF public.billing_patient_id() IS NOT NULL THEN
+            RETURN NULL;
+        END IF;
+        RAISE EXCEPTION 'Billing changes need the employee who made them. Run SELECT set_config(''app.employee_id'', ''<employee id>'', true) first.';
+    END IF;
+    IF value !~ '^[0-9]+$' THEN
+        RAISE EXCEPTION 'Billing changes need the employee who made them. Run SELECT set_config(''app.employee_id'', ''<employee id>'', true) first.';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.employee WHERE employee_id = value::integer AND is_active) THEN
+        RAISE EXCEPTION 'Employee % is not an active employee', value;
+    END IF;
+    RETURN value::integer;
+END;
+$_$;
+
+
+--
+-- Name: billing_patient_id(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.billing_patient_id() RETURNS integer
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $_$
+DECLARE
+    value text := current_setting('app.patient_id', true);
+BEGIN
+    IF value IS NULL OR value !~ '^[0-9]+$' THEN
+        RETURN NULL;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM public.patient WHERE patient_id = value::integer AND is_active) THEN
+        RAISE EXCEPTION 'Patient % is not an active patient', value;
+    END IF;
+    RETURN value::integer;
+END;
+$_$;
+
+
+--
 -- Name: check_appointment_conflict(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -108,6 +237,402 @@ $$;
 
 
 --
+-- Name: check_appointment_referral(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.check_appointment_referral() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+BEGIN
+    IF NEW.status = 'Cancelled' THEN
+        RETURN NEW;
+    END IF;
+    IF TG_OP = 'UPDATE'
+       AND OLD.status <> 'Cancelled'
+       AND OLD.doctor_id = NEW.doctor_id
+       AND OLD.patient_id = NEW.patient_id
+       AND OLD.specialty_id = NEW.specialty_id
+       AND OLD.appointment_date = NEW.appointment_date
+       AND OLD.referral_id IS NOT DISTINCT FROM NEW.referral_id THEN
+        RETURN NEW;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM public.specialty WHERE specialty_id = NEW.specialty_id AND requires_referral)
+       AND NOT EXISTS (
+           SELECT 1 FROM public.referral r
+           WHERE r.referral_id = NEW.referral_id
+             AND r.status = 'Approved'
+             AND r.patient_id = NEW.patient_id
+             AND r.specialist_doctor_id = NEW.doctor_id
+             AND r.specialty_id = NEW.specialty_id
+             AND NEW.appointment_date BETWEEN r.date_issued AND r.expiration_date
+       ) THEN
+        RAISE EXCEPTION 'This specialist visit needs an approved referral for this patient, doctor and date';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: check_invoice_change(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.check_invoice_change() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+BEGIN
+    IF public.billing_employee_id() IS NULL THEN
+        IF TG_OP <> 'UPDATE' OR NEW.patient_id <> public.billing_patient_id() OR NEW.amount <> OLD.amount
+           OR NEW.status NOT IN ('Pending', 'Overdue', 'Paid') OR OLD.status = 'Void' THEN
+            RAISE EXCEPTION 'Patients can only pay their own invoices';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'Invoices can''t be deleted. Void them instead.';
+    END IF;
+
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.status = 'Void' THEN
+            RAISE EXCEPTION 'A new invoice can''t start as Void';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF OLD.status = 'Void' THEN
+        RAISE EXCEPTION 'Invoice % is void and can''t be changed', OLD.invoice_id;
+    END IF;
+    IF NEW.status = 'Void' AND EXISTS (
+        SELECT 1 FROM public.payment WHERE invoice_id = NEW.invoice_id AND status IN ('Completed', 'Requested')
+    ) THEN
+        RAISE EXCEPTION 'Refund every payment on invoice % before voiding it', NEW.invoice_id;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: check_payment_amount(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.check_payment_amount() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $_$
+DECLARE
+    total numeric;
+    paid numeric;
+BEGIN
+    SELECT amount INTO total FROM public.invoice WHERE invoice_id = NEW.invoice_id FOR UPDATE;
+    SELECT COALESCE(sum(amount_paid), 0) INTO paid FROM public.payment WHERE invoice_id = NEW.invoice_id AND status <> 'Refunded';
+    IF NEW.amount_paid > total - paid THEN
+        RAISE EXCEPTION 'Only $% is left on this invoice', to_char(GREATEST(total - paid, 0), 'FM999999990.00');
+    END IF;
+    RETURN NEW;
+END;
+$_$;
+
+
+--
+-- Name: check_payment_change(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.check_payment_change() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+BEGIN
+    IF public.billing_employee_id() IS NULL THEN
+        IF TG_OP <> 'INSERT' OR NEW.status <> 'Completed' OR NEW.handled_by IS NOT NULL
+           OR NOT EXISTS (SELECT 1 FROM public.invoice WHERE invoice_id = NEW.invoice_id AND patient_id = public.billing_patient_id() AND status <> 'Void')
+           OR NOT EXISTS (SELECT 1 FROM public.payment_type WHERE payment_type_id = NEW.payment_type_id AND name IN ('Credit Card', 'Debit Card')) THEN
+            RAISE EXCEPTION 'Patients can only pay their own invoices by card';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF TG_OP = 'DELETE' THEN
+        RAISE EXCEPTION 'Payments can''t be deleted. Refund them instead.';
+    END IF;
+
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.status <> 'Completed' THEN
+            RAISE EXCEPTION 'A new payment must be Completed';
+        END IF;
+        IF EXISTS (SELECT 1 FROM public.invoice WHERE invoice_id = NEW.invoice_id AND status = 'Void') THEN
+            RAISE EXCEPTION 'Invoice % is void and can''t take payments', NEW.invoice_id;
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF NEW.invoice_id IS DISTINCT FROM OLD.invoice_id OR NEW.amount_paid IS DISTINCT FROM OLD.amount_paid THEN
+        RAISE EXCEPTION 'A payment''s invoice and amount can''t be changed. Refund it instead.';
+    END IF;
+    IF OLD.status = NEW.status THEN
+        RETURN NEW;
+    END IF;
+    IF NOT (
+        (OLD.status = 'Completed' AND NEW.status = 'Requested')
+        OR (OLD.status = 'Requested' AND NEW.status IN ('Completed', 'Refunded'))
+    ) THEN
+        RAISE EXCEPTION 'A payment can''t go from % to %', OLD.status, NEW.status;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: check_referral(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.check_referral() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+DECLARE
+    acting_doctor integer := NULLIF(current_setting('app.employee_id', true), '')::integer;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF acting_doctor IS DISTINCT FROM NEW.referring_doctor_id THEN
+            RAISE EXCEPTION 'Referrals must be sent by the referring doctor';
+        END IF;
+        IF btrim(COALESCE(NEW.request_reason, '')) = '' THEN
+            RAISE EXCEPTION 'A referral needs a reason';
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM public.patient_doctor WHERE patient_id = NEW.patient_id AND doctor_id = NEW.primary_doctor_id AND is_primary AND is_active) THEN
+            RAISE EXCEPTION 'The referral must go to the patient''s primary doctor';
+        END IF;
+        IF NEW.status = 'Approved' AND NEW.referring_doctor_id = NEW.primary_doctor_id THEN
+            NEW.decided_at := now();
+        ELSIF NEW.status <> 'Pending' THEN
+            RAISE EXCEPTION 'A new referral waits for the primary doctor';
+        END IF;
+        RETURN NEW;
+    END IF;
+
+    IF (NEW.patient_id, NEW.referring_doctor_id, NEW.primary_doctor_id, NEW.specialist_doctor_id, NEW.specialty_id, NEW.request_reason)
+       IS DISTINCT FROM
+       (OLD.patient_id, OLD.referring_doctor_id, OLD.primary_doctor_id, OLD.specialist_doctor_id, OLD.specialty_id, OLD.request_reason) THEN
+        RAISE EXCEPTION 'A referral can''t be changed after it''s sent';
+    END IF;
+
+    IF NEW.status IS DISTINCT FROM OLD.status THEN
+        IF OLD.status <> 'Pending' THEN
+            RAISE EXCEPTION 'This referral was already decided';
+        END IF;
+        IF OLD.primary_doctor_id IS NULL OR acting_doctor IS DISTINCT FROM OLD.primary_doctor_id THEN
+            RAISE EXCEPTION 'Only the patient''s primary doctor can approve or deny this referral';
+        END IF;
+        IF OLD.expiration_date < (now() AT TIME ZONE 'America/Chicago')::date THEN
+            RAISE EXCEPTION 'This referral has expired';
+        END IF;
+        IF NEW.status = 'Denied' AND btrim(COALESCE(NEW.denial_reason, '')) = '' THEN
+            RAISE EXCEPTION 'A denial needs a reason';
+        END IF;
+        NEW.decided_at := now();
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: insurance_verified(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.insurance_verified() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+DECLARE
+    bill record;
+BEGIN
+    IF NEW.status <> 'Verified' OR (TG_OP = 'UPDATE' AND OLD.status = 'Verified') THEN
+        RETURN NULL;
+    END IF;
+    FOR bill IN SELECT invoice_id FROM public.invoice WHERE patient_id = NEW.patient_id AND status IN ('Pending', 'Overdue') ORDER BY invoice_id LOOP
+        PERFORM public.pay_with_insurance(bill.invoice_id);
+    END LOOP;
+    RETURN NULL;
+END;
+$$;
+
+
+--
+-- Name: invoice_completed_visit(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.invoice_completed_visit() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+DECLARE
+    new_invoice integer;
+    order_row record;
+    item_row record;
+BEGIN
+    IF NEW.status <> 'Completed' OR OLD.status = 'Completed' THEN
+        RETURN NULL;
+    END IF;
+    -- a visit has at most one open invoice
+    IF EXISTS (SELECT 1 FROM public.invoice WHERE appointment_id = NEW.appointment_id AND status <> 'Void') THEN
+        RETURN NULL;
+    END IF;
+
+    INSERT INTO public.invoice (patient_id, appointment_id, amount, issue_date, status)
+    VALUES (NEW.patient_id, NEW.appointment_id, 0, (now() AT TIME ZONE 'America/Chicago')::date, 'Pending')
+    RETURNING invoice_id INTO new_invoice;
+
+    INSERT INTO public.invoice_item (invoice_id, fee_id, category, description, price)
+    SELECT new_invoice, f.fee_id, 'Visit', f.name, f.price
+    FROM public.service_fee f
+    WHERE f.specialty_id = NEW.specialty_id AND f.is_active;
+
+    FOR order_row IN SELECT lab_order_id FROM public.lab_order WHERE appointment_id = NEW.appointment_id AND status <> 'Cancelled' LOOP
+        PERFORM public.add_lab_order_line(new_invoice, order_row.lab_order_id);
+    END LOOP;
+
+    FOR item_row IN
+        SELECT pi.prescription_item_id
+        FROM public.prescription_item pi
+        JOIN public.prescription rx ON rx.prescription_id = pi.prescription_id
+        WHERE rx.appointment_id = NEW.appointment_id AND pi.is_active
+    LOOP
+        PERFORM public.add_prescription_line(new_invoice, item_row.prescription_item_id);
+    END LOOP;
+
+    RETURN NULL;
+END;
+$$;
+
+
+--
+-- Name: invoice_item_changed(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.invoice_item_changed() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+DECLARE
+    target integer := CASE WHEN TG_OP = 'DELETE' THEN OLD.invoice_id ELSE NEW.invoice_id END;
+BEGIN
+    PERFORM public.refresh_invoice_total(target);
+    PERFORM public.pay_with_insurance(target);
+    RETURN NULL;
+END;
+$$;
+
+
+--
+-- Name: lab_order_billing(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.lab_order_billing() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+DECLARE
+    open_invoice integer;
+BEGIN
+    IF NEW.appointment_id IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    IF TG_OP = 'INSERT' AND NEW.status <> 'Cancelled' THEN
+        open_invoice := public.billable_visit_invoice(NEW.appointment_id);
+        IF open_invoice IS NOT NULL THEN
+            PERFORM public.add_lab_order_line(open_invoice, NEW.lab_order_id);
+        END IF;
+    ELSIF TG_OP = 'UPDATE' AND NEW.status = 'Cancelled' AND OLD.status <> 'Cancelled' THEN
+        open_invoice := public.unpaid_visit_invoice(NEW.appointment_id);
+        IF open_invoice IS NOT NULL THEN
+            DELETE FROM public.invoice_item WHERE invoice_id = open_invoice AND lab_order_id = NEW.lab_order_id;
+        END IF;
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+
+--
+-- Name: pay_with_insurance(integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.pay_with_insurance(target_invoice integer) RETURNS void
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+DECLARE
+    bill record;
+    plan record;
+    owed numeric;
+    insurance_type integer;
+    old_reason text := current_setting('app.reason', true);
+BEGIN
+    SELECT invoice_id, patient_id, amount, status INTO bill FROM public.invoice WHERE invoice_id = target_invoice;
+    IF bill IS NULL OR bill.status = 'Void' THEN
+        RETURN;
+    END IF;
+    SELECT provider, status INTO plan FROM public.insurance WHERE patient_id = bill.patient_id;
+    IF plan IS NULL OR plan.status <> 'Verified' THEN
+        RETURN;
+    END IF;
+    SELECT bill.amount - COALESCE(sum(amount_paid), 0) INTO owed
+    FROM public.payment WHERE invoice_id = target_invoice AND status <> 'Refunded';
+    SELECT payment_type_id INTO insurance_type FROM public.payment_type WHERE name = 'Insurance' AND is_active;
+    IF owed <= 0 OR insurance_type IS NULL THEN
+        RETURN;
+    END IF;
+
+    PERFORM set_config('app.reason', 'Paid by insurance: ' || plan.provider, true);
+    INSERT INTO public.payment (invoice_id, payment_type_id, handled_by, amount_paid, payment_date, status)
+    VALUES (target_invoice, insurance_type, NULL, owed, (now() AT TIME ZONE 'America/Chicago')::date, 'Completed');
+    PERFORM set_config('app.reason', COALESCE(old_reason, ''), true);
+END;
+$$;
+
+
+--
+-- Name: prescription_item_billing(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.prescription_item_billing() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+DECLARE
+    visit integer;
+    open_invoice integer;
+BEGIN
+    SELECT appointment_id INTO visit FROM public.prescription WHERE prescription_id = NEW.prescription_id;
+    IF visit IS NULL THEN
+        RETURN NULL;
+    END IF;
+
+    IF TG_OP = 'INSERT' AND NEW.is_active THEN
+        open_invoice := public.billable_visit_invoice(visit);
+        IF open_invoice IS NOT NULL THEN
+            PERFORM public.add_prescription_line(open_invoice, NEW.prescription_item_id);
+        END IF;
+    ELSIF TG_OP = 'UPDATE' AND OLD.is_active AND NOT NEW.is_active THEN
+        open_invoice := public.unpaid_visit_invoice(visit);
+        IF open_invoice IS NOT NULL THEN
+            DELETE FROM public.invoice_item WHERE invoice_id = open_invoice AND prescription_item_id = NEW.prescription_item_id;
+        END IF;
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+
+--
 -- Name: record_appointment_history(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -121,7 +646,9 @@ BEGIN
        AND OLD.status IS NOT DISTINCT FROM NEW.status
        AND OLD.appointment_date IS NOT DISTINCT FROM NEW.appointment_date
        AND OLD.time_slot_id IS NOT DISTINCT FROM NEW.time_slot_id
-       AND OLD.doctor_id IS NOT DISTINCT FROM NEW.doctor_id THEN
+       AND OLD.doctor_id IS NOT DISTINCT FROM NEW.doctor_id
+       AND OLD.checked_in_at IS NOT DISTINCT FROM NEW.checked_in_at
+       AND OLD.checked_out_at IS NOT DISTINCT FROM NEW.checked_out_at THEN
         RETURN NULL;
     END IF;
 
@@ -130,14 +657,17 @@ BEGIN
         old_status, new_status,
         old_appointment_date, new_appointment_date,
         old_time_slot_id, new_time_slot_id,
-        old_doctor_id, new_doctor_id
+        old_doctor_id, new_doctor_id,
+        checked_in_at, checked_out_at, changed_by
     )
     VALUES (
         NEW.appointment_id, TG_OP,
         OLD.status, NEW.status,
         OLD.appointment_date, NEW.appointment_date,
         OLD.time_slot_id, NEW.time_slot_id,
-        OLD.doctor_id, NEW.doctor_id
+        OLD.doctor_id, NEW.doctor_id,
+        NEW.checked_in_at, NEW.checked_out_at,
+        NULLIF(current_setting('app.employee_id', true), '')::integer
     );
 
     RETURN NULL;
@@ -171,6 +701,120 @@ BEGIN
 
     RETURN NULL;
 END;
+$$;
+
+
+--
+-- Name: record_invoice_change(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.record_invoice_change() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+DECLARE
+    employee integer := public.billing_employee_id();
+BEGIN
+    IF TG_OP = 'UPDATE' AND OLD.status IS NOT DISTINCT FROM NEW.status THEN
+        RETURN NULL;
+    END IF;
+
+    INSERT INTO public.billing_history (invoice_id, payment_id, old_status, new_status, changed_by, changed_by_patient, reason)
+    VALUES (
+        NEW.invoice_id, NULL,
+        CASE WHEN TG_OP = 'UPDATE' THEN OLD.status END, NEW.status,
+        employee, CASE WHEN employee IS NULL THEN public.billing_patient_id() END,
+        NULLIF(current_setting('app.reason', true), '')
+    );
+    RETURN NULL;
+END;
+$$;
+
+
+--
+-- Name: record_payment_change(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.record_payment_change() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+DECLARE
+    employee integer := public.billing_employee_id();
+    invoice_amount numeric;
+    invoice_status text;
+    still_paid numeric;
+BEGIN
+    IF TG_OP = 'UPDATE' AND OLD.status IS NOT DISTINCT FROM NEW.status THEN
+        RETURN NULL;
+    END IF;
+
+    INSERT INTO public.billing_history (invoice_id, payment_id, old_status, new_status, changed_by, changed_by_patient, reason)
+    VALUES (
+        NEW.invoice_id, NEW.payment_id,
+        CASE WHEN TG_OP = 'UPDATE' THEN OLD.status END, NEW.status,
+        employee, CASE WHEN employee IS NULL THEN public.billing_patient_id() END,
+        NULLIF(current_setting('app.reason', true), '')
+    );
+
+    -- refunded payments don't count, payments waiting on a refund still do
+    SELECT amount, status INTO invoice_amount, invoice_status FROM public.invoice WHERE invoice_id = NEW.invoice_id;
+    SELECT COALESCE(sum(amount_paid), 0) INTO still_paid
+    FROM public.payment WHERE invoice_id = NEW.invoice_id AND status <> 'Refunded';
+
+    IF invoice_status IN ('Pending', 'Overdue') AND still_paid >= invoice_amount THEN
+        UPDATE public.invoice SET status = 'Paid' WHERE invoice_id = NEW.invoice_id;
+    ELSIF invoice_status = 'Paid' AND still_paid < invoice_amount THEN
+        UPDATE public.invoice SET status = 'Pending' WHERE invoice_id = NEW.invoice_id;
+    END IF;
+    RETURN NULL;
+END;
+$$;
+
+
+--
+-- Name: refresh_invoice_total(integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.refresh_invoice_total(target_invoice integer) RETURNS void
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+DECLARE
+    new_amount numeric;
+    still_paid numeric;
+    current_status text;
+    current_amount numeric;
+BEGIN
+    SELECT amount, status INTO current_amount, current_status FROM public.invoice WHERE invoice_id = target_invoice;
+    IF current_status IS NULL OR current_status = 'Void' THEN
+        RETURN;
+    END IF;
+
+    SELECT COALESCE(sum(price), 0) INTO new_amount FROM public.invoice_item WHERE invoice_id = target_invoice;
+    SELECT COALESCE(sum(amount_paid), 0) INTO still_paid FROM public.payment WHERE invoice_id = target_invoice AND status <> 'Refunded';
+
+    IF new_amount IS DISTINCT FROM current_amount THEN
+        UPDATE public.invoice SET amount = new_amount WHERE invoice_id = target_invoice;
+    END IF;
+    IF current_status IN ('Pending', 'Overdue') AND new_amount > 0 AND still_paid >= new_amount THEN
+        UPDATE public.invoice SET status = 'Paid' WHERE invoice_id = target_invoice;
+    ELSIF current_status = 'Paid' AND still_paid < new_amount THEN
+        UPDATE public.invoice SET status = 'Pending' WHERE invoice_id = target_invoice;
+    END IF;
+END;
+$$;
+
+
+--
+-- Name: unpaid_visit_invoice(integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.unpaid_visit_invoice(visit integer) RETURNS integer
+    LANGUAGE sql
+    SET search_path TO ''
+    AS $$
+    SELECT invoice_id FROM public.invoice WHERE appointment_id = visit AND status IN ('Pending', 'Overdue') LIMIT 1;
 $$;
 
 
@@ -290,6 +934,9 @@ CREATE TABLE public.appointment_history (
     old_doctor_id integer,
     new_doctor_id integer NOT NULL,
     changed_at timestamp with time zone DEFAULT now() NOT NULL,
+    changed_by integer,
+    checked_in_at timestamp with time zone,
+    checked_out_at timestamp with time zone,
     CONSTRAINT chk_appointment_history_operation CHECK (((operation)::text = ANY (ARRAY[('INSERT'::character varying)::text, ('UPDATE'::character varying)::text])))
 );
 
@@ -328,6 +975,38 @@ CREATE TABLE public.appointment_summary (
 
 ALTER TABLE public.appointment_summary ALTER COLUMN appointment_summary_id ADD GENERATED ALWAYS AS IDENTITY (
     SEQUENCE NAME public.appointment_summary_appointment_summary_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: billing_history; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.billing_history (
+    history_id integer NOT NULL,
+    invoice_id integer NOT NULL,
+    payment_id integer,
+    old_status character varying(20),
+    new_status character varying(20) NOT NULL,
+    changed_by integer,
+    reason text,
+    changed_at timestamp with time zone DEFAULT now() NOT NULL,
+    changed_by_patient integer,
+    CONSTRAINT chk_billing_history_who CHECK (((changed_by IS NOT NULL) OR (changed_by_patient IS NOT NULL)))
+);
+
+
+--
+-- Name: billing_history_history_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.billing_history ALTER COLUMN history_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.billing_history_history_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -417,9 +1096,10 @@ CREATE TABLE public.emergency_contact (
     first_name character varying(50) NOT NULL,
     last_name character varying(50) NOT NULL,
     relationship character varying(50) NOT NULL,
-    phone_number character varying(20) NOT NULL,
+    phone_number character varying(10) NOT NULL,
     is_primary boolean DEFAULT false NOT NULL,
-    is_active boolean DEFAULT true NOT NULL
+    is_active boolean DEFAULT true NOT NULL,
+    CONSTRAINT chk_emergency_contact_phone CHECK (((phone_number)::text ~ '^[0-9]{10}$'::text))
 );
 
 
@@ -447,10 +1127,11 @@ CREATE TABLE public.employee (
     last_name character varying(50) NOT NULL,
     dob date NOT NULL,
     employee_type_id integer NOT NULL,
-    phone character varying(20) NOT NULL,
+    phone character varying(10) NOT NULL,
     email character varying(100) NOT NULL,
     office_id integer NOT NULL,
-    is_active boolean DEFAULT true NOT NULL
+    is_active boolean DEFAULT true NOT NULL,
+    CONSTRAINT chk_employee_phone CHECK (((phone)::text ~ '^[0-9]{10}$'::text))
 );
 
 
@@ -677,7 +1358,7 @@ CREATE TABLE public.invoice (
     issue_date date DEFAULT CURRENT_DATE NOT NULL,
     status character varying(20) DEFAULT 'Pending'::character varying NOT NULL,
     CONSTRAINT chk_invoice_amount CHECK ((amount >= (0)::numeric)),
-    CONSTRAINT chk_invoice_status CHECK (((status)::text = ANY ((ARRAY['Pending'::character varying, 'Paid'::character varying, 'Overdue'::character varying])::text[])))
+    CONSTRAINT chk_invoice_status CHECK (((status)::text = ANY ((ARRAY['Pending'::character varying, 'Paid'::character varying, 'Overdue'::character varying, 'Void'::character varying])::text[])))
 );
 
 
@@ -687,6 +1368,39 @@ CREATE TABLE public.invoice (
 
 ALTER TABLE public.invoice ALTER COLUMN invoice_id ADD GENERATED ALWAYS AS IDENTITY (
     SEQUENCE NAME public.invoice_invoice_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: invoice_item; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.invoice_item (
+    invoice_item_id integer NOT NULL,
+    invoice_id integer NOT NULL,
+    fee_id integer,
+    category character varying(20) NOT NULL,
+    description character varying(150) NOT NULL,
+    price numeric(10,2) NOT NULL,
+    lab_order_id integer,
+    prescription_item_id integer,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_invoice_item_category CHECK (((category)::text = ANY ((ARRAY['Visit'::character varying, 'Lab Test'::character varying, 'Medication'::character varying])::text[]))),
+    CONSTRAINT chk_invoice_item_price CHECK ((price >= (0)::numeric))
+);
+
+
+--
+-- Name: invoice_item_invoice_item_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.invoice_item ALTER COLUMN invoice_item_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.invoice_item_invoice_item_id_seq
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -836,8 +1550,9 @@ CREATE TABLE public.office (
     city character varying(50) NOT NULL,
     state character varying(2) NOT NULL,
     zip character varying(10) NOT NULL,
-    phone character varying(20) NOT NULL,
-    is_active boolean DEFAULT true NOT NULL
+    phone character varying(10) NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
+    CONSTRAINT chk_office_phone CHECK (((phone)::text ~ '^[0-9]{10}$'::text))
 );
 
 
@@ -896,10 +1611,11 @@ CREATE TABLE public.patient (
     last_name character varying(50) NOT NULL,
     dob date NOT NULL,
     gender character varying(20),
-    phone character varying(20) NOT NULL,
+    phone character varying(10) NOT NULL,
     email character varying(100),
     address character varying(200),
-    is_active boolean DEFAULT true NOT NULL
+    is_active boolean DEFAULT true NOT NULL,
+    CONSTRAINT chk_patient_phone CHECK (((phone)::text ~ '^[0-9]{10}$'::text))
 );
 
 
@@ -1005,7 +1721,9 @@ CREATE TABLE public.payment (
     handled_by integer,
     amount_paid numeric(10,2) NOT NULL,
     payment_date date DEFAULT CURRENT_DATE NOT NULL,
-    CONSTRAINT chk_payment_amount CHECK ((amount_paid > (0)::numeric))
+    status character varying(20) DEFAULT 'Completed'::character varying NOT NULL,
+    CONSTRAINT chk_payment_amount CHECK ((amount_paid > (0)::numeric)),
+    CONSTRAINT chk_payment_status CHECK (((status)::text = ANY ((ARRAY['Completed'::character varying, 'Requested'::character varying, 'Refunded'::character varying])::text[])))
 );
 
 
@@ -1119,6 +1837,10 @@ CREATE TABLE public.referral (
     date_issued date DEFAULT CURRENT_DATE NOT NULL,
     expiration_date date NOT NULL,
     status character varying(20) DEFAULT 'Pending'::character varying NOT NULL,
+    primary_doctor_id integer,
+    request_reason text,
+    denial_reason text,
+    decided_at timestamp with time zone,
     CONSTRAINT chk_referral_dates CHECK ((expiration_date >= date_issued)),
     CONSTRAINT chk_referral_status CHECK (((status)::text = ANY ((ARRAY['Pending'::character varying, 'Approved'::character varying, 'Denied'::character varying])::text[])))
 );
@@ -1135,6 +1857,52 @@ ALTER TABLE public.referral ALTER COLUMN referral_id ADD GENERATED ALWAYS AS IDE
     NO MINVALUE
     NO MAXVALUE
     CACHE 1
+);
+
+
+--
+-- Name: service_fee; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.service_fee (
+    fee_id integer NOT NULL,
+    category character varying(20) NOT NULL,
+    type character varying(50),
+    name character varying(100) NOT NULL,
+    price numeric(10,2) NOT NULL,
+    specialty_id integer,
+    lab_test_type_id integer,
+    medication_id integer,
+    is_active boolean DEFAULT true NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chk_service_fee_category CHECK (((category)::text = ANY ((ARRAY['Visit'::character varying, 'Lab Test'::character varying, 'Medication'::character varying])::text[]))),
+    CONSTRAINT chk_service_fee_link CHECK (((((category)::text = 'Visit'::text) AND (specialty_id IS NOT NULL) AND (lab_test_type_id IS NULL) AND (medication_id IS NULL)) OR (((category)::text = 'Lab Test'::text) AND (lab_test_type_id IS NOT NULL) AND (specialty_id IS NULL) AND (medication_id IS NULL)) OR (((category)::text = 'Medication'::text) AND (medication_id IS NOT NULL) AND (specialty_id IS NULL) AND (lab_test_type_id IS NULL)))),
+    CONSTRAINT chk_service_fee_price CHECK ((price >= (0)::numeric))
+);
+
+
+--
+-- Name: service_fee_fee_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+ALTER TABLE public.service_fee ALTER COLUMN fee_id ADD GENERATED ALWAYS AS IDENTITY (
+    SEQUENCE NAME public.service_fee_fee_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
+-- Name: session; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.session (
+    sid character varying NOT NULL,
+    sess json NOT NULL,
+    expire timestamp(6) without time zone NOT NULL
 );
 
 
@@ -1313,6 +2081,7 @@ CREATE TABLE public.visit_diagnosis (
     reasoning text,
     recorded_by_employee_id integer NOT NULL,
     created_at timestamp without time zone DEFAULT now() NOT NULL,
+    is_active boolean DEFAULT true NOT NULL,
     CONSTRAINT chk_visit_diagnosis_name CHECK ((length(TRIM(BOTH FROM name)) > 0))
 );
 
@@ -1385,6 +2154,14 @@ ALTER TABLE ONLY public.appointment_summary
 
 ALTER TABLE ONLY public.appointment_summary
     ADD CONSTRAINT appointment_summary_pkey PRIMARY KEY (appointment_summary_id);
+
+
+--
+-- Name: billing_history billing_history_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.billing_history
+    ADD CONSTRAINT billing_history_pkey PRIMARY KEY (history_id);
 
 
 --
@@ -1564,11 +2341,27 @@ ALTER TABLE ONLY public.insurance
 
 
 --
--- Name: invoice invoice_appointment_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: invoice_item invoice_item_lab_order_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.invoice
-    ADD CONSTRAINT invoice_appointment_id_key UNIQUE (appointment_id);
+ALTER TABLE ONLY public.invoice_item
+    ADD CONSTRAINT invoice_item_lab_order_id_key UNIQUE (lab_order_id);
+
+
+--
+-- Name: invoice_item invoice_item_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_item
+    ADD CONSTRAINT invoice_item_pkey PRIMARY KEY (invoice_item_id);
+
+
+--
+-- Name: invoice_item invoice_item_prescription_item_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_item
+    ADD CONSTRAINT invoice_item_prescription_item_id_key UNIQUE (prescription_item_id);
 
 
 --
@@ -1756,6 +2549,22 @@ ALTER TABLE ONLY public.referral
 
 
 --
+-- Name: service_fee service_fee_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_fee
+    ADD CONSTRAINT service_fee_pkey PRIMARY KEY (fee_id);
+
+
+--
+-- Name: session session_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.session
+    ADD CONSTRAINT session_pkey PRIMARY KEY (sid);
+
+
+--
 -- Name: shift_type shift_type_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1859,10 +2668,31 @@ CREATE INDEX idx_appointment_history_appointment ON public.appointment_history U
 
 
 --
+-- Name: idx_billing_history_invoice; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_billing_history_invoice ON public.billing_history USING btree (invoice_id, changed_at);
+
+
+--
+-- Name: idx_billing_history_payment; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_billing_history_payment ON public.billing_history USING btree (payment_id, changed_at);
+
+
+--
 -- Name: idx_employee_audit_employee; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_employee_audit_employee ON public.employee_audit USING btree (employee_id, changed_at);
+
+
+--
+-- Name: idx_invoice_item_invoice; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_invoice_item_invoice ON public.invoice_item USING btree (invoice_id);
 
 
 --
@@ -1880,10 +2710,52 @@ CREATE INDEX idx_patient_vitals_patient_recorded ON public.patient_vitals USING 
 
 
 --
+-- Name: idx_session_expire; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_session_expire ON public.session USING btree (expire);
+
+
+--
 -- Name: idx_visit_diagnosis_appointment; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_visit_diagnosis_appointment ON public.visit_diagnosis USING btree (appointment_id);
+
+
+--
+-- Name: invoice_one_per_appointment; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX invoice_one_per_appointment ON public.invoice USING btree (appointment_id) WHERE ((status)::text <> 'Void'::text);
+
+
+--
+-- Name: patient_doctor_one_primary; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX patient_doctor_one_primary ON public.patient_doctor USING btree (patient_id) WHERE (is_primary AND is_active);
+
+
+--
+-- Name: service_fee_one_per_lab_test; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX service_fee_one_per_lab_test ON public.service_fee USING btree (lab_test_type_id) WHERE (lab_test_type_id IS NOT NULL);
+
+
+--
+-- Name: service_fee_one_per_medication; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX service_fee_one_per_medication ON public.service_fee USING btree (medication_id) WHERE (medication_id IS NOT NULL);
+
+
+--
+-- Name: service_fee_one_per_specialty; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX service_fee_one_per_specialty ON public.service_fee USING btree (specialty_id) WHERE (specialty_id IS NOT NULL);
 
 
 --
@@ -1901,10 +2773,101 @@ CREATE TRIGGER appointment_history_trigger AFTER INSERT OR UPDATE ON public.appo
 
 
 --
+-- Name: appointment appointment_invoice_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER appointment_invoice_trigger AFTER UPDATE OF status ON public.appointment FOR EACH ROW EXECUTE FUNCTION public.invoice_completed_visit();
+
+
+--
+-- Name: appointment appointment_primary_doctor_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER appointment_primary_doctor_trigger AFTER UPDATE OF status ON public.appointment FOR EACH ROW EXECUTE FUNCTION public.assign_primary_doctor();
+
+
+--
+-- Name: appointment appointment_referral_check_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER appointment_referral_check_trigger BEFORE INSERT OR UPDATE ON public.appointment FOR EACH ROW EXECUTE FUNCTION public.check_appointment_referral();
+
+
+--
 -- Name: employee employee_audit_trigger; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER employee_audit_trigger AFTER UPDATE OF is_active, employee_type_id, office_id ON public.employee FOR EACH ROW EXECUTE FUNCTION public.record_employee_changes();
+
+
+--
+-- Name: insurance insurance_verified_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER insurance_verified_trigger AFTER INSERT OR UPDATE OF status ON public.insurance FOR EACH ROW EXECUTE FUNCTION public.insurance_verified();
+
+
+--
+-- Name: invoice invoice_check_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER invoice_check_trigger BEFORE INSERT OR DELETE OR UPDATE ON public.invoice FOR EACH ROW EXECUTE FUNCTION public.check_invoice_change();
+
+
+--
+-- Name: invoice invoice_history_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER invoice_history_trigger AFTER INSERT OR UPDATE ON public.invoice FOR EACH ROW EXECUTE FUNCTION public.record_invoice_change();
+
+
+--
+-- Name: invoice_item invoice_item_total_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER invoice_item_total_trigger AFTER INSERT OR DELETE ON public.invoice_item FOR EACH ROW EXECUTE FUNCTION public.invoice_item_changed();
+
+
+--
+-- Name: lab_order lab_order_billing_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER lab_order_billing_trigger AFTER INSERT OR UPDATE OF status ON public.lab_order FOR EACH ROW EXECUTE FUNCTION public.lab_order_billing();
+
+
+--
+-- Name: payment payment_amount_check_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER payment_amount_check_trigger BEFORE INSERT ON public.payment FOR EACH ROW EXECUTE FUNCTION public.check_payment_amount();
+
+
+--
+-- Name: payment payment_check_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER payment_check_trigger BEFORE INSERT OR DELETE OR UPDATE ON public.payment FOR EACH ROW EXECUTE FUNCTION public.check_payment_change();
+
+
+--
+-- Name: payment payment_history_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER payment_history_trigger AFTER INSERT OR UPDATE ON public.payment FOR EACH ROW EXECUTE FUNCTION public.record_payment_change();
+
+
+--
+-- Name: prescription_item prescription_item_billing_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER prescription_item_billing_trigger AFTER INSERT OR UPDATE OF is_active ON public.prescription_item FOR EACH ROW EXECUTE FUNCTION public.prescription_item_billing();
+
+
+--
+-- Name: referral referral_check_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER referral_check_trigger BEFORE INSERT OR UPDATE ON public.referral FOR EACH ROW EXECUTE FUNCTION public.check_referral();
 
 
 --
@@ -2148,6 +3111,38 @@ ALTER TABLE ONLY public.invoice
 
 
 --
+-- Name: invoice_item invoice_item_fee_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_item
+    ADD CONSTRAINT invoice_item_fee_id_fkey FOREIGN KEY (fee_id) REFERENCES public.service_fee(fee_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: invoice_item invoice_item_invoice_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_item
+    ADD CONSTRAINT invoice_item_invoice_id_fkey FOREIGN KEY (invoice_id) REFERENCES public.invoice(invoice_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: invoice_item invoice_item_lab_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_item
+    ADD CONSTRAINT invoice_item_lab_order_id_fkey FOREIGN KEY (lab_order_id) REFERENCES public.lab_order(lab_order_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: invoice_item invoice_item_prescription_item_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.invoice_item
+    ADD CONSTRAINT invoice_item_prescription_item_id_fkey FOREIGN KEY (prescription_item_id) REFERENCES public.prescription_item(prescription_item_id) ON DELETE RESTRICT;
+
+
+--
 -- Name: invoice invoice_patient_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2356,6 +3351,14 @@ ALTER TABLE ONLY public.referral
 
 
 --
+-- Name: referral referral_primary_doctor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.referral
+    ADD CONSTRAINT referral_primary_doctor_id_fkey FOREIGN KEY (primary_doctor_id) REFERENCES public.doctor(employee_id) ON DELETE RESTRICT;
+
+
+--
 -- Name: referral referral_referring_doctor_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2369,6 +3372,30 @@ ALTER TABLE ONLY public.referral
 
 ALTER TABLE ONLY public.referral
     ADD CONSTRAINT referral_specialist_doctor_id_fkey FOREIGN KEY (specialist_doctor_id) REFERENCES public.doctor(employee_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: service_fee service_fee_lab_test_type_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_fee
+    ADD CONSTRAINT service_fee_lab_test_type_id_fkey FOREIGN KEY (lab_test_type_id) REFERENCES public.lab_test_type(lab_test_type_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: service_fee service_fee_medication_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_fee
+    ADD CONSTRAINT service_fee_medication_id_fkey FOREIGN KEY (medication_id) REFERENCES public.medication(medication_id) ON DELETE RESTRICT;
+
+
+--
+-- Name: service_fee service_fee_specialty_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.service_fee
+    ADD CONSTRAINT service_fee_specialty_id_fkey FOREIGN KEY (specialty_id) REFERENCES public.specialty(specialty_id) ON DELETE RESTRICT;
 
 
 --
@@ -2458,6 +3485,12 @@ ALTER TABLE public.appointment_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.appointment_summary ENABLE ROW LEVEL SECURITY;
 
 --
+-- Name: billing_history; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.billing_history ENABLE ROW LEVEL SECURITY;
+
+--
 -- Name: certificate; Type: ROW SECURITY; Schema: public; Owner: -
 --
 
@@ -2540,6 +3573,12 @@ ALTER TABLE public.insurance ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.invoice ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: invoice_item; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.invoice_item ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: lab_order; Type: ROW SECURITY; Schema: public; Owner: -
@@ -2636,6 +3675,18 @@ ALTER TABLE public.prescription_item ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.referral ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: service_fee; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.service_fee ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: session; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.session ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: shift_type; Type: ROW SECURITY; Schema: public; Owner: -

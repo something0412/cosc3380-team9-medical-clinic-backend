@@ -2,7 +2,7 @@
 
 This folder has the SQL for the Medical Clinic database. The live PostgreSQL database is hosted on Supabase.
 
-- `schema.sql` is a snapshot of the database structure (tables, relationships, constraints, triggers and trigger functions, no patient or employee records). It's **out of date**: it doesn't include migrations 011 to 019.
+- `schema.sql` is a snapshot of the live database structure (all 46 tables with their relationships, constraints, triggers and trigger functions, no patient or employee records). It includes every migration through 019.
 - `seed.sql` is for fictional sample data. It's empty right now.
 - `migrations/` has the SQL scripts for database changes.
 

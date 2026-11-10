@@ -15,7 +15,7 @@ before(async () => {
 
 after(() => app.close());
 
-const validOffice = { name: "Uptown Clinic", street: "500 Post Oak Blvd", apt: "", city: "Houston", state: "tx", zip: "77056-1234", phone: "(713) 555-0500" };
+const validOffice = { name: "Uptown Clinic", street: "500 Post Oak Blvd", apt: "", city: "Houston", state: "tx", zip: "77056-1234", phone: "7135550500" };
 
 async function createOffice(overrides: object = {}) {
   const res = await admin.post("/api/admin/offices", { ...validOffice, ...overrides });
@@ -101,7 +101,7 @@ describe("creating and editing offices", () => {
   test("edit keeps the ID and status and touches nothing else", async () => {
     const office = await createOffice({ name: "Edit Me Clinic" });
     const before = await relatedSnapshot();
-    const res = await admin.put(`/api/admin/offices/${office.officeId}`, { ...validOffice, name: "Edited Clinic", apt: "Suite 300", phone: "713-555-0599" });
+    const res = await admin.put(`/api/admin/offices/${office.officeId}`, { ...validOffice, name: "Edited Clinic", apt: "Suite 300", phone: "7135550599" });
     assert.equal(res.status, 200);
     assert.equal(res.body.officeId, office.officeId);
     assert.equal(res.body.name, "Edited Clinic");
@@ -154,7 +154,7 @@ describe("office status", () => {
   test("an office whose employees are all inactive can be deactivated", async () => {
     const office = await createOffice({ name: "Inactive Staff Clinic" });
     const employee = await admin.post("/api/admin/employees", {
-      firstName: "Leaving", lastName: "Soon", dob: "1990-01-01", email: "leaving@test.org", phone: "1", employeeTypeId: 4, officeId: office.officeId,
+      firstName: "Leaving", lastName: "Soon", dob: "1990-01-01", email: "leaving@test.org", phone: "7135550001", employeeTypeId: 4, officeId: office.officeId,
     });
     await admin.patch(`/api/admin/employees/${employee.body.employeeId}/status`, { isActive: false });
     const res = await admin.patch(`/api/admin/offices/${office.officeId}/status`, { isActive: false });
@@ -166,7 +166,7 @@ describe("office status", () => {
   test("employee forms keep their rules for inactive offices", async () => {
     // new assignments can't use an inactive office
     const res = await admin.post("/api/admin/employees", {
-      firstName: "New", lastName: "Hire", dob: "1990-01-01", email: "new.hire@test.org", phone: "1", employeeTypeId: 4, officeId: ids.closedOffice,
+      firstName: "New", lastName: "Hire", dob: "1990-01-01", email: "new.hire@test.org", phone: "7135550001", employeeTypeId: 4, officeId: ids.closedOffice,
     });
     assert.equal(res.status, 400);
   });
