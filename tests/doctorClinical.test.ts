@@ -7,6 +7,7 @@ import {
   addEmployee,
   addLogin,
   addPatient,
+  addReferral,
   addSlots,
   dayFrom,
   freezeClockAtNoon,
@@ -27,8 +28,8 @@ const CHART_KEYS = [
 let app: Awaited<ReturnType<typeof startTestApp>>;
 let today: string;
 let slots: Awaited<ReturnType<typeof addSlots>>;
-let dan: TestClient, dora: TestClient, ula: TestClient, pat: TestClient, rita: TestClient, lab: TestClient;
-let doraId: number, ulaId: number, labTypeId: number;
+let dan: TestClient, dora: TestClient, ula: TestClient, remy: TestClient, pat: TestClient, rita: TestClient, lab: TestClient;
+let doraId: number, ulaId: number, remyId: number, labTypeId: number;
 let others: [string, TestClient, number][];
 const people: Record<string, number> = {};
 const meds: Record<string, number> = {};
@@ -80,6 +81,7 @@ async function whileHeld(change: string, rowId: number, send: () => Promise<Test
 
 const summary = (client: TestClient, appointmentId: number, body: object) => client.put(`/api/doctor/appointments/${appointmentId}/summary`, body);
 const diagnose = (client: TestClient, appointmentId: number, diagnoses: object[]) => client.post(`/api/doctor/appointments/${appointmentId}/diagnoses`, { diagnoses });
+const remove = (client: TestClient, diagnosisId: number | string) => client.patch(`/api/doctor/diagnoses/${diagnosisId}/remove`);
 const prescribe = (client: TestClient, appointmentId: number, items: object[]) => client.post(`/api/doctor/appointments/${appointmentId}/prescriptions`, { items });
 const order = (client: TestClient, body: object) => client.post("/api/doctor/lab-orders", body);
 
@@ -93,6 +95,9 @@ before(async () => {
 
   doraId = await addDoctor(app.db, "Dora", ids.mainOffice);
   ulaId = await addDoctor(app.db, "Ula", ids.mainOffice);
+  // Remy is the primary doctor who sends patients to Dan, and a cardiologist Dan's patients get sent to
+  remyId = await addDoctor(app.db, "Remy", ids.mainOffice);
+  await app.db.query(`INSERT INTO doctor_specialty (doctor_id, specialty_id) VALUES ($1, $2)`, [remyId, ids.cardiology]);
   await addLogin(app.db, ids.receptionist);
   await app.db.query(`UPDATE employee SET office_id = $1 WHERE employee_id = $2`, [ids.mainOffice, ids.receptionist]);
   labTypeId = (await app.db.query(`INSERT INTO employee_types (type_name) VALUES ('Lab Technician') RETURNING employee_type_id AS id`)).rows[0].id;
@@ -107,15 +112,14 @@ before(async () => {
   people.noShowOnly = await addPatient(app.db, "Nia", "Missed");
   people.pastReferral = await addPatient(app.db, "Pia", "Expired");
   people.seen = ids.patient;
-  await app.db.query(`INSERT INTO patient_doctor (patient_id, doctor_id, is_primary) VALUES ($1, $2, true), ($3, $4, true)`, [people.assigned, ids.doctor, people.assigned, doraId]);
+  // Dan is the primary doctor and Dora is assigned too
+  await app.db.query(`INSERT INTO patient_doctor (patient_id, doctor_id, is_primary) VALUES ($1, $2, true), ($1, $3, false)`, [people.assigned, ids.doctor, doraId]);
   await visit(people.booked, ids.doctor, "Scheduled", { date: dayFrom(today, 5) });
   await visit(people.cancelledOnly, ids.doctor, "Cancelled");
   await visit(people.noShowOnly, ids.doctor, "No Show");
-  await app.db.query(
-    `INSERT INTO referral (patient_id, referring_doctor_id, specialist_doctor_id, specialty_id, date_issued, expiration_date, status)
-     VALUES ($1, $3, $4, $5, $6, $7, 'Pending'), ($2, $3, $4, $5, $8, $9, 'Pending')`,
-    [people.referred, people.pastReferral, doraId, ids.doctor, ids.cardiology, today, dayFrom(today, 30), dayFrom(today, -100), dayFrom(today, -10)]
-  );
+  const toDan = { referringDoctorId: remyId, specialistDoctorId: ids.doctor, specialtyId: ids.cardiology };
+  await addReferral(app.db, { ...toDan, patientId: people.referred, issued: today, expires: dayFrom(today, 30) });
+  await addReferral(app.db, { ...toDan, patientId: people.pastReferral, issued: dayFrom(today, -100), expires: dayFrom(today, -10) });
 
   // chart data for Pat, who Dan has seen before
   people.seenVisit = await visit(people.seen, ids.doctor, "Completed");
@@ -159,6 +163,7 @@ before(async () => {
   dan = await app.loginStaff(ids.doctor);
   dora = await app.loginStaff(doraId);
   ula = await app.loginStaff(ulaId);
+  remy = await app.loginStaff(remyId);
   pat = await app.loginPatient(ids.patient, "pat@test.org");
   rita = await app.loginStaff(ids.receptionist);
   lab = await app.loginStaff(labId);
@@ -197,7 +202,10 @@ describe("which patients a doctor can see", () => {
     assert.deepEqual(ids_((await dan.get("/api/doctor/patients?search=booked")).body), [people.booked]);
     assert.deepEqual((await dan.get("/api/doctor/patients?search=%25")).body, []);
     assert.deepEqual(ids_((await ula.get(`/api/doctor/patients?doctorId=${ids.doctor}`)).body), []);
-    assert.deepEqual(ids_((await dora.get("/api/doctor/patients")).body).sort(), [people.assigned].sort());
+    const doras = (await dora.get("/api/doctor/patients")).body;
+    assert.deepEqual(ids_(doras).sort(), [people.assigned].sort());
+    // Dora is assigned too, but only the primary doctor counts as assigned to me
+    assert.equal(doras[0].assignedToMe, false);
   });
 
   test("the chart shows the patient's clinical record", async () => {
@@ -226,12 +234,16 @@ describe("which patients a doctor can see", () => {
 
   test("a referral alone shows the referral but not the chart, until a visit is booked", async () => {
     const patientId = await addPatient(app.db, "Ria", "Referral");
-    const referral = await app.db.query(
-      `INSERT INTO referral (patient_id, referring_doctor_id, specialist_doctor_id, specialty_id, date_issued, expiration_date, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'Pending') RETURNING referral_id`,
-      [patientId, doraId, ids.doctor, ids.cardiology, today, dayFrom(today, 30)]
-    );
-    const referralId = referral.rows[0].referral_id;
+    // Dora sends it and Remy, the primary doctor, decides
+    const referralId = await addReferral(app.db, {
+      patientId,
+      referringDoctorId: doraId,
+      primaryDoctorId: remyId,
+      specialistDoctorId: ids.doctor,
+      specialtyId: ids.cardiology,
+      issued: today,
+      expires: dayFrom(today, 30),
+    });
     // records another doctor made for this patient
     const prescription = await app.db.query(`INSERT INTO prescription (patient_id, prescriber_id) VALUES ($1, $2) RETURNING prescription_id`, [patientId, doraId]);
     const labOrder = await app.db.query(`INSERT INTO lab_order (patient_id, ordered_by_employee_id, lab_test_type_id) VALUES ($1, $2, $3) RETURNING lab_order_id`, [
@@ -240,10 +252,12 @@ describe("which patients a doctor can see", () => {
       tests.cbc,
     ]);
 
-    // the referral itself is still there to read and answer
-    const received = (await dan.get("/api/doctor/referrals?view=received")).body.received;
-    assert.ok(received.some((r: { referralId: number; patientName: string }) => r.referralId === referralId && r.patientName === "Ria Referral"), "referral listed");
-    assert.equal((await dan.patch(`/api/doctor/referrals/${referralId}/status`, { status: "Approved" })).body.status, "Approved");
+    // the specialist doesn't decide, and gets the referral once the primary doctor approves it
+    const received = async () => (await dan.get("/api/doctor/referrals")).body.received as { referralId: number; patientName: string }[];
+    assert.equal((await received()).some((r) => r.referralId === referralId), false, "pending referral listed");
+    assert.equal((await dan.patch(`/api/doctor/referrals/${referralId}/status`, { status: "Approved" })).status, 403);
+    assert.equal((await remy.patch(`/api/doctor/referrals/${referralId}/status`, { status: "Approved" })).body.status, "Approved");
+    assert.ok((await received()).some((r) => r.referralId === referralId && r.patientName === "Ria Referral"), "referral listed");
 
     // even an approved referral doesn't open the chart or the patient's other records
     assert.equal((await dan.get(`/api/doctor/patients/${patientId}`)).status, 403);
@@ -358,6 +372,9 @@ describe("visit summaries", () => {
       await waitForLockWait(app.db);
       const [saved, checkedOut] = await Promise.all([saving, checkingOut]);
       assert.deepEqual([saved.status, checkedOut.status, checkedOut.body.status], [200, 200, "Completed"]);
+      // a first completed Family Medicine visit makes the doctor the primary doctor
+      const primary = await app.db.query(`SELECT doctor_id FROM patient_doctor WHERE patient_id = $1 AND is_primary AND is_active`, [second.patientId]);
+      assert.deepEqual(primary.rows, [{ doctor_id: ids.doctor }]);
     } finally {
       await restore();
     }
@@ -415,6 +432,52 @@ describe("diagnoses", () => {
     const visitView = (await dan.get(`/api/doctor/appointments/${appointmentId}`)).body;
     assert.deepEqual([visitView.summary.visitReason, visitView.diagnoses.length, visitView.missingForms], ["Stomach ache", 2, ["Intake"]]);
     assert.equal((await ula.get(`/api/doctor/appointments/${appointmentId}`)).status, 404);
+  });
+
+  test("a doctor removes a diagnosis they added, and it drops off the visit and the records but stays saved", async () => {
+    const appointmentId = await visit(people.seen, ids.doctor);
+    await summary(dan, appointmentId, { visitReason: "Sneezing" });
+    const added = (await diagnose(dan, appointmentId, [{ name: "Sinusitis" }, { name: "Allergies" }])).body;
+    const [sinusitis] = added.map((d: { visitDiagnosisId: number }) => d.visitDiagnosisId);
+
+    const res = await remove(dan, sinusitis);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.deepEqual(res.body.map((d: { name: string }) => d.name), ["Allergies"]);
+    assert.deepEqual((await dan.get(`/api/doctor/appointments/${appointmentId}`)).body.diagnoses.map((d: { name: string }) => d.name), ["Allergies"]);
+    const chartVisit = (await dan.get(`/api/doctor/patients/${people.seen}`)).body.visits.find((v: { appointmentId: number }) => v.appointmentId === appointmentId);
+    assert.deepEqual(chartVisit.diagnoses, ["Allergies"]);
+    const shown = (await pat.get(`/api/patient/${people.seen}/records`)).body.visits.find((v: { appointmentId: number }) => v.appointmentId === appointmentId);
+    assert.equal(shown.diagnosis, "Allergies");
+    assert.deepEqual((await app.db.query(`SELECT is_active FROM visit_diagnosis WHERE visit_diagnosis_id = $1`, [sinusitis])).rows, [{ is_active: false }]);
+
+    const again = await remove(dan, sinusitis);
+    assert.deepEqual([again.status, again.body.error], [409, "This diagnosis was already removed"]);
+    // a removed diagnosis can be added back
+    assert.deepEqual((await diagnose(dan, appointmentId, [{ name: "sinusitis" }])).body.map((d: { name: string }) => d.name), ["Allergies", "sinusitis"]);
+  });
+
+  test("only the doctor who added a diagnosis on their own open visit can remove it", async () => {
+    const appointmentId = await visit(people.seen, ids.doctor);
+    const [mine] = (await diagnose(dan, appointmentId, [{ name: "Sprain" }])).body.map((d: { visitDiagnosisId: number }) => d.visitDiagnosisId);
+    const nurseNote = await app.db.query(`INSERT INTO visit_diagnosis (appointment_id, name, recorded_by_employee_id) VALUES ($1, 'Bruise', $2) RETURNING visit_diagnosis_id AS id`, [
+      appointmentId,
+      ids.nurse,
+    ]);
+
+    assert.deepEqual((await remove(dan, nurseNote.rows[0].id)).body, { error: "Only the doctor who added a diagnosis can remove it" });
+    assert.equal((await remove(ula, mine)).status, 404);
+    assert.equal((await remove(dan, 999999)).status, 404);
+    assert.equal((await remove(dan, "abc")).status, 400);
+    for (const [name, client, status] of others) assert.equal((await remove(client, mine)).status, status, name);
+
+    // a visit that was later cancelled isn't open for documenting anymore
+    const cancelled = await visit(people.seen, ids.doctor);
+    const [onCancelled] = (await diagnose(dan, cancelled, [{ name: "Strain" }])).body.map((d: { visitDiagnosisId: number }) => d.visitDiagnosisId);
+    await app.db.query(`UPDATE appointment SET status = 'Cancelled' WHERE appointment_id = $1`, [cancelled]);
+    assert.equal((await remove(dan, onCancelled)).status, 409);
+
+    const stillActive = await count(`SELECT count(*) AS n FROM visit_diagnosis WHERE visit_diagnosis_id = ANY($1::int[]) AND is_active`, [[mine, nurseNote.rows[0].id, onCancelled]]);
+    assert.equal(stillActive, 3);
   });
 });
 
@@ -570,13 +633,20 @@ describe("doctor dashboard", () => {
       people.seen,
       tests.lipid,
     ]);
+    // Dan reviews referrals Dora sends for his primary patient, and only the open one counts
+    const fromDora = { patientId: people.assigned, referringDoctorId: doraId, primaryDoctorId: ids.doctor, specialistDoctorId: remyId, specialtyId: ids.cardiology };
+    await addReferral(app.db, { ...fromDora, issued: today, expires: dayFrom(today, 30) });
+    await addReferral(app.db, { ...fromDora, issued: dayFrom(today, -100), expires: dayFrom(today, -10) });
+    await addReferral(app.db, { ...fromDora, issued: today, expires: dayFrom(today, 30), status: "Denied" });
+    await addReferral(app.db, { ...fromDora, issued: today, expires: dayFrom(today, 30), status: "Approved" });
     const res = await dan.get("/api/doctor/dashboard");
     assert.equal(res.status, 200);
     const scheduledToday = await count(`SELECT count(*) AS n FROM appointment WHERE doctor_id = $1 AND appointment_date = $2 AND status = 'Scheduled'`, [ids.doctor, today]);
     const open = await count(`SELECT count(*) AS n FROM lab_order WHERE ordered_by_employee_id = $1 AND status IN ('Ordered', 'InProgress')`, [ids.doctor]);
     assert.deepEqual(
       [res.body.myPatients, res.body.todayAppointments, res.body.pendingLabs, res.body.referralsToReview],
-      [1, scheduledToday, open, 1]
+      // the assigned patient, and the one checked out earlier whose Family Medicine visit made Dan their primary doctor
+      [2, scheduledToday, open, 1]
     );
     assert.ok(res.body.upcomingAppointments.length <= 5 && res.body.upcomingAppointments.every((a: { status: string; doctorId: number }) => a.status === "Scheduled" && a.doctorId === ids.doctor), "upcoming");
     assert.deepEqual(res.body.recentResults.map((r: { resultNotes: string }) => r.resultNotes), ["Normal"]);

@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
+import { asEmployee } from "./helpers/appointmentData.js";
 import { startTestApp } from "./helpers/testApp.js";
 import type { TestClient } from "./helpers/testApp.js";
 import { ids, resetDatabase } from "./helpers/testDb.js";
 
 // adds patient 2, doctor 5, and three slots. Slots 1 and 2 are Morning, and slot 3 is Full Day at the same time as slot 1
 const SETUP = `
-  INSERT INTO patient (first_name, last_name, dob, phone, email) VALUES ('Olive', 'Other', '1995-02-02', '713-555-9100', 'olive@test.org');
+  INSERT INTO patient (first_name, last_name, dob, phone, email) VALUES ('Olive', 'Other', '1995-02-02', '7135559100', 'olive@test.org');
   INSERT INTO shift_type (name, start_time, end_time) VALUES ('Full Day', '08:00', '17:00');
   INSERT INTO time_slot (shift_type_id, start_time, end_time) VALUES (1, '08:00', '08:30'), (1, '08:30', '09:00'), (2, '08:00', '08:30');
   INSERT INTO employee (first_name, last_name, dob, employee_type_id, phone, email, office_id) VALUES
-    ('Fay', 'Family', '1980-01-01', 2, '713-555-2005', 'fay@test.org', 1);
+    ('Fay', 'Family', '1980-01-01', 2, '7135552005', 'fay@test.org', 1);
   INSERT INTO doctor (employee_id, license_number, license_issuing_state, license_expiration_date, npi_number) VALUES (5, 'TX-FAY5', 'TX', '2030-01-01', '2000000005');
   INSERT INTO doctor_specialty (doctor_id, specialty_id, is_primary) VALUES (5, 1, true);
 `;
@@ -102,12 +103,15 @@ describe("appointment history trigger", () => {
 
   test("a status change records the old and new status", async () => {
     const id = await insertAppointment({ date: await freshDate(), timeSlotId: 1 });
-    await app.db.query(`UPDATE appointment SET status = 'Completed' WHERE appointment_id = $1`, [id]);
+    // completing a visit bills it, and the billing trigger needs to know who did it
+    await asEmployee(app.db, ids.admin, (client) => client.query(`UPDATE appointment SET status = 'Completed' WHERE appointment_id = $1`, [id]));
     const rows = await history(id);
     assert.equal(rows.length, 2);
     assert.equal(rows[1].operation, "UPDATE");
     assert.equal(rows[1].old_status, "Scheduled");
     assert.equal(rows[1].new_status, "Completed");
+    const who = await app.db.query(`SELECT changed_by FROM appointment_history WHERE appointment_id = $1 ORDER BY history_id`, [id]);
+    assert.deepEqual(who.rows.map((r) => r.changed_by), [null, ids.admin]);
   });
 
   test("moving an appointment records the old and new date, slot, and doctor", async () => {
@@ -125,9 +129,27 @@ describe("appointment history trigger", () => {
   test("updates that leave the tracked columns alone add nothing", async () => {
     const id = await insertAppointment({ date: await freshDate(), timeSlotId: 1 });
     await app.db.query(`UPDATE appointment SET status = status WHERE appointment_id = $1`, [id]);
-    await app.db.query(`UPDATE appointment SET checked_in_at = now() WHERE appointment_id = $1`, [id]);
+    await app.db.query(`UPDATE appointment SET checked_in_at = checked_in_at, checked_out_at = checked_out_at WHERE appointment_id = $1`, [id]);
     await app.db.query(`UPDATE appointment SET booking_channel = 'Web' WHERE appointment_id = $1`, [id]);
     assert.equal((await history(id)).length, 1);
+  });
+
+  test("check in and check out each record a row with the times and who did it", async () => {
+    const id = await insertAppointment({ date: await freshDate(), timeSlotId: 1 });
+    await asEmployee(app.db, ids.receptionist, (client) => client.query(`UPDATE appointment SET checked_in_at = now() WHERE appointment_id = $1`, [id]));
+    await asEmployee(app.db, ids.receptionist, (client) =>
+      client.query(`UPDATE appointment SET checked_out_at = now(), status = 'Completed' WHERE appointment_id = $1`, [id])
+    );
+    const { rows } = await app.db.query(
+      `SELECT old_status, new_status, checked_in_at IS NOT NULL AS "in", checked_out_at IS NOT NULL AS "out", changed_by
+       FROM appointment_history WHERE appointment_id = $1 ORDER BY history_id`,
+      [id]
+    );
+    assert.deepEqual(rows, [
+      { old_status: null, new_status: "Scheduled", in: false, out: false, changed_by: null },
+      { old_status: "Scheduled", new_status: "Scheduled", in: true, out: false, changed_by: ids.receptionist },
+      { old_status: "Scheduled", new_status: "Completed", in: true, out: true, changed_by: ids.receptionist },
+    ]);
   });
 
   test("a rolled back insert or update leaves no history", async () => {
@@ -180,7 +202,7 @@ describe("employee audit trigger", () => {
       lastName: "Reception",
       dob: "1990-07-07",
       email: "rita@test.org",
-      phone: "713-555-7777",
+      phone: "7135557777",
       employeeTypeId: 4,
       officeId: 2,
     });
@@ -295,7 +317,9 @@ describe("appointment conflict trigger", () => {
     const date = await freshDate();
     const id = await insertAppointment({ date, timeSlotId: 1 });
     await app.db.query(`UPDATE appointment SET checked_in_at = now() WHERE appointment_id = $1`, [id]);
-    await app.db.query(`UPDATE appointment SET status = 'Completed', checked_out_at = now() WHERE appointment_id = $1`, [id]);
+    await asEmployee(app.db, ids.admin, (client) =>
+      client.query(`UPDATE appointment SET status = 'Completed', checked_out_at = now() WHERE appointment_id = $1`, [id])
+    );
   });
 
   test("a second transaction writing the same time waits for the first and is rejected", async () => {

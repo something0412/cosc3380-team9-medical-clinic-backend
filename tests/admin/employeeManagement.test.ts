@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
-import { addAppointment, addDoctor, addPatient, addSlots, waitForLockWait } from "../helpers/appointmentData.js";
+import { addAppointment, addDoctor, addPatient, addReferral, addSlots, asEmployee, dayFrom, waitForLockWait } from "../helpers/appointmentData.js";
 import { slowWrites } from "../helpers/dbFaults.js";
 import { startTestApp } from "../helpers/testApp.js";
 import type { TestClient, TestResponse } from "../helpers/testApp.js";
@@ -29,7 +29,7 @@ function person(overrides: object = {}) {
     lastName: `Staff${counter}`,
     dob: "1990-02-02",
     email: `emma${counter}@clinic.test`,
-    phone: "713-555-6000",
+    phone: "7135556000",
     employeeTypeId: RECEPTIONIST_TYPE,
     officeId: ids.mainOffice,
     ...overrides,
@@ -55,9 +55,25 @@ async function visit(doctorId: number, opts: { days?: number; status?: string; s
   const patientId = await addPatient(app.db, "Vee", `Visit${++counter}`);
   const date = (await row(`SELECT ($1::date + $2::int)::text AS d`, [today, opts.days ?? 7])).d;
   const appointmentId = await addAppointment(app.db, { patientId, doctorId, officeId: opts.officeId ?? ids.mainOffice, date, timeSlotId: slots.allDay, status: opts.status });
-  if (opts.specialtyId) await app.db.query(`UPDATE appointment SET specialty_id = $2 WHERE appointment_id = $1`, [appointmentId, opts.specialtyId]);
+  if (opts.specialtyId) {
+    const referralId = opts.specialtyId === ids.cardiology ? await cardiologyReferral(patientId, doctorId) : null;
+    await app.db.query(`UPDATE appointment SET specialty_id = $2, referral_id = $3 WHERE appointment_id = $1`, [appointmentId, opts.specialtyId, referralId]);
+  }
   if (opts.checkedIn) await app.db.query(`UPDATE appointment SET checked_in_at = now() WHERE appointment_id = $1`, [appointmentId]);
   return { patientId, appointmentId };
+}
+
+// cardiology visits need an approved referral, so dan refers the patient and approves it as their primary doctor
+function cardiologyReferral(patientId: number, specialistId: number) {
+  return addReferral(app.db, {
+    patientId,
+    referringDoctorId: ids.doctor,
+    specialistDoctorId: specialistId,
+    specialtyId: ids.cardiology,
+    issued: dayFrom(today, -10),
+    expires: dayFrom(today, 30),
+    status: "Approved",
+  });
 }
 
 // holds some changes open in their own transaction while a request waits on them
@@ -128,18 +144,18 @@ describe("one set of employee rules behind both admin pages", () => {
       doctor.employeeId,
       ids.admin,
     ]);
-    const res = await admin.put(`/api/admin/staff/${doctor.employeeId}`, { firstName: "Renamed", lastName: doctor.lastName, phone: "713-555-6111", email: doctor.email, officeId: ids.westsideOffice });
+    const res = await admin.put(`/api/admin/staff/${doctor.employeeId}`, { firstName: "Renamed", lastName: doctor.lastName, phone: "7135556111", email: doctor.email, officeId: ids.westsideOffice });
     assert.equal(res.status, 200, JSON.stringify(res.body));
     assert.deepEqual(
       [res.body.firstName, res.body.phone, res.body.officeId, res.body.dob, res.body.employeeType, res.body.doctor.npiNumber, res.body.doctor.specialties.length],
-      ["Renamed", "713-555-6111", ids.westsideOffice, doctor.dob, "Doctor", doctor.doctor.npiNumber, 2]
+      ["Renamed", "7135556111", ids.westsideOffice, doctor.dob, "Doctor", doctor.doctor.npiNumber, 2]
     );
     assert.equal((await row(`SELECT username FROM employee_creds WHERE employee_id = $1`, [doctor.employeeId])).username, "doc.login");
 
-    const edit = (body: object) => admin.put(`/api/admin/staff/${doctor.employeeId}`, { firstName: "Renamed", lastName: doctor.lastName, phone: "713-555-6111", email: doctor.email, officeId: ids.westsideOffice, ...body });
+    const edit = (body: object) => admin.put(`/api/admin/staff/${doctor.employeeId}`, { firstName: "Renamed", lastName: doctor.lastName, phone: "7135556111", email: doctor.email, officeId: ids.westsideOffice, ...body });
     assert.deepEqual((await edit({ officeId: ids.closedOffice })).body, { error: "Selected office does not exist" });
     assert.deepEqual((await edit({ email: "nina@test.org" })).body, { error: "Another employee already uses that email" });
-    assert.deepEqual((await admin.put("/api/admin/staff/999999", { firstName: "A", lastName: "B", phone: "1", email: "nobody@clinic.test", officeId: 1 })).body, { error: "Employee not found" });
+    assert.deepEqual((await admin.put("/api/admin/staff/999999", { firstName: "A", lastName: "B", phone: "7135550001", email: "nobody@clinic.test", officeId: 1 })).body, { error: "Employee not found" });
     assert.equal((await row(`SELECT office_id FROM employee WHERE employee_id = $1`, [doctor.employeeId])).office_id, ids.westsideOffice);
   });
 
@@ -208,7 +224,10 @@ describe("activation and deactivation", () => {
 
     const blocked = await admin.patch(`/api/admin/employees/${doctor.employeeId}/status`, { isActive: false });
     assert.deepEqual([blocked.status, blocked.body.error], [409, "2 upcoming appointments are booked with this doctor. Reschedule or cancel them first."]);
-    await app.db.query(`UPDATE appointment SET status = 'Completed', checked_out_at = now() WHERE appointment_id = $1`, [arrived.appointmentId]);
+    // checking out creates an invoice, and the billing triggers need to know who did it
+    await asEmployee(app.db, ids.admin, (client) =>
+      client.query(`UPDATE appointment SET status = 'Completed', checked_out_at = now() WHERE appointment_id = $1`, [arrived.appointmentId])
+    );
     assert.deepEqual((await admin.patch(`/api/admin/staff/${doctor.employeeId}/status`, { isActive: false })).body.error, "1 upcoming appointment is booked with this doctor. Reschedule or cancel it first.");
 
     await app.db.query(`UPDATE appointment SET status = 'Cancelled' WHERE appointment_id = $1`, [upcoming.appointmentId]);
@@ -260,17 +279,29 @@ describe("activation and deactivation", () => {
 });
 
 describe("office moves and role changes", () => {
-  test("moving a nurse changes whose charts they can open on their next request", async () => {
+  test("moving a nurse changes whose visits they can document on their next request", async () => {
     const nurse = await created(admin.post("/api/admin/employees", { ...person({ employeeTypeId: NURSE_TYPE, officeId: ids.westsideOffice }), nurse: nurseLicense(), login: { username: `nurse${counter}`, password: TEST_PASSWORD } }));
-    const westPatient = (await visit(await addDoctor(app.db, "West", ids.westsideOffice), { days: 0, officeId: ids.westsideOffice })).patientId;
-    const mainPatient = (await visit(await addDoctor(app.db, "Main", ids.mainOffice), { days: 0, officeId: ids.mainOffice })).patientId;
+    const west = await visit(await addDoctor(app.db, "West", ids.westsideOffice), { days: 0, officeId: ids.westsideOffice, checkedIn: true });
+    const main = await visit(await addDoctor(app.db, "Main", ids.mainOffice), { days: 0, officeId: ids.mainOffice, checkedIn: true });
     const session = await app.loginStaff(nurse.employeeId);
-    assert.deepEqual([(await session.get(`/api/nurse/patients/${westPatient}`)).status, (await session.get(`/api/nurse/patients/${mainPatient}`)).status], [200, 403]);
+    const otherOffice = "Intake can only be edited by nurses at this appointment's office.";
+
+    // any visit opens, but only the ones at the nurse's office can be documented
+    async function access() {
+      const opened = [];
+      const vitals = [];
+      for (const v of [west, main]) {
+        opened.push(await session.get(`/api/nurse/appointments/${v.appointmentId}`));
+        vitals.push(await session.post(`/api/nurse/appointments/${v.appointmentId}/vitals`, { heartRate: 70 }));
+      }
+      return { opened: opened.map((r) => r.status), blocked: opened.map((r) => r.body.editBlockedReason), vitals: vitals.map((r) => r.status) };
+    }
+    assert.deepEqual(await access(), { opened: [200, 200], blocked: [null, otherOffice], vitals: [201, 404] });
 
     const moved = await admin.put(`/api/admin/staff/${nurse.employeeId}`, { firstName: nurse.firstName, lastName: nurse.lastName, phone: nurse.phone, email: nurse.email, officeId: ids.mainOffice });
     assert.equal(moved.status, 200, JSON.stringify(moved.body));
     assert.equal((await session.get("/api/auth/me")).body.officeId, ids.mainOffice);
-    assert.deepEqual([(await session.get(`/api/nurse/patients/${westPatient}`)).status, (await session.get(`/api/nurse/patients/${mainPatient}`)).status], [403, 200]);
+    assert.deepEqual(await access(), { opened: [200, 200], blocked: [otherOffice, null], vitals: [404, 201] });
   });
 
   test("a receptionist can become a lab technician and the new role applies on the next request", async () => {
@@ -328,12 +359,13 @@ describe("doctor specialties", () => {
     const doctor = await newDoctor([ids.familyMedicine, ids.cardiology]);
     const patientId = await addPatient(app.db, "Cy", "Cardio");
     const date = (await row(`SELECT ($1::date + 12)::text AS d`, [today])).d;
+    const referralId = await cardiologyReferral(patientId, doctor.employeeId);
     const removal = await whileHeld(
       [
         [`SELECT 1 FROM employee WHERE employee_id = $1 FOR SHARE`, [doctor.employeeId]],
         [
-          `INSERT INTO appointment (patient_id, doctor_id, office_id, appointment_date, time_slot_id, specialty_id, booking_channel) VALUES ($1, $2, $3, $4, $5, $6, 'Web')`,
-          [patientId, doctor.employeeId, ids.mainOffice, date, slots.allDay, ids.cardiology],
+          `INSERT INTO appointment (patient_id, doctor_id, office_id, appointment_date, time_slot_id, specialty_id, booking_channel, referral_id) VALUES ($1, $2, $3, $4, $5, $6, 'Web', $7)`,
+          [patientId, doctor.employeeId, ids.mainOffice, date, slots.allDay, ids.cardiology, referralId],
         ],
       ],
       () => editDoctor(doctor, [ids.familyMedicine])

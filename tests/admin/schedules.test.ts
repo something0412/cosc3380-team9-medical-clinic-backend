@@ -3,6 +3,7 @@ import { after, before, describe, test } from "node:test";
 import { startTestApp } from "../helpers/testApp.js";
 import type { TestClient } from "../helpers/testApp.js";
 import { ids, resetDatabase } from "../helpers/testDb.js";
+import { addDoctor, addReferral, dayFrom } from "../helpers/appointmentData.js";
 
 let app: Awaited<ReturnType<typeof startTestApp>>;
 let admin: TestClient;
@@ -36,14 +37,14 @@ async function shiftSlots(shiftTypeId: number) {
 }
 
 // books an upcoming appointment on the doctor's next given weekday
-async function bookAppointment(doctorId: number, day: string, officeId: number, specialtyId: number, timeSlotId: number) {
+async function bookAppointment(doctorId: number, day: string, officeId: number, specialtyId: number, timeSlotId: number, referralId: number | null = null) {
   const { rows } = await app.db.query(
     `
-    INSERT INTO appointment (patient_id, doctor_id, office_id, appointment_date, time_slot_id, specialty_id, booking_channel)
-    VALUES ($1, $2, $3, CURRENT_DATE + (($4 - EXTRACT(ISODOW FROM CURRENT_DATE)::int + 7) % 7), $5, $6, 'Web')
+    INSERT INTO appointment (patient_id, doctor_id, office_id, appointment_date, time_slot_id, specialty_id, booking_channel, referral_id)
+    VALUES ($1, $2, $3, CURRENT_DATE + (($4 - EXTRACT(ISODOW FROM CURRENT_DATE)::int + 7) % 7), $5, $6, 'Web', $7)
     RETURNING appointment_id
     `,
-    [ids.patient, doctorId, officeId, DAYS.indexOf(day) + 1, timeSlotId, specialtyId]
+    [ids.patient, doctorId, officeId, DAYS.indexOf(day) + 1, timeSlotId, specialtyId, referralId]
   );
   return rows[0].appointment_id as number;
 }
@@ -265,7 +266,13 @@ describe("doctor schedules", () => {
 describe("booked appointments", () => {
   test("schedule changes that would strand a booked appointment are refused", async () => {
     const slot = await createSlot(ids.morningShift, "08:00", "08:30");
-    const appointmentId = await bookAppointment(ids.doctor, "Monday", ids.mainOffice, ids.cardiology, slot);
+    // Dan's Monday cardiology visit needs an approved referral from the patient's primary doctor
+    const today = (await app.db.query(`SELECT CURRENT_DATE::text AS d`)).rows[0].d as string;
+    const referralId = await addReferral(app.db, {
+      patientId: ids.patient, referringDoctorId: await addDoctor(app.db, "Fran", ids.mainOffice), specialistDoctorId: ids.doctor,
+      specialtyId: ids.cardiology, issued: dayFrom(today, -1), expires: dayFrom(today, 30), status: "Approved",
+    });
+    const appointmentId = await bookAppointment(ids.doctor, "Monday", ids.mainOffice, ids.cardiology, slot, referralId);
     const path = `/api/admin/schedules/${ids.doctor}/Monday`;
 
     const moved = await admin.put(path, { ...monday, officeId: ids.westsideOffice });

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
+import { asEmployee } from "./helpers/appointmentData.js";
 import { failWrites, slowWrites } from "./helpers/dbFaults.js";
 import { startTestApp } from "./helpers/testApp.js";
 import type { TestClient } from "./helpers/testApp.js";
@@ -15,7 +16,7 @@ let app: Awaited<ReturnType<typeof startTestApp>>;
 let anonymous: TestClient, admin: TestClient, receptionist: TestClient, nurse: TestClient, doctor: TestClient, pat: TestClient, olive: TestClient;
 
 const desk = (patientId: number, path = "") => `/api/receptionist/patients/${patientId}${path}`;
-const contact = (overrides: object = {}) => ({ firstName: "Cal", lastName: "Contact", relationship: "Friend", phoneNumber: "713-555-8000", isPrimary: false, ...overrides });
+const contact = (overrides: object = {}) => ({ firstName: "Cal", lastName: "Contact", relationship: "Friend", phoneNumber: "7135558000", isPrimary: false, ...overrides });
 
 async function primaries(patientId: number) {
   const result = await app.db.query(`SELECT first_name FROM emergency_contact WHERE patient_id = $1 AND is_primary AND is_active ORDER BY first_name`, [patientId]);
@@ -35,7 +36,7 @@ before(async () => {
     firstName: "Olive",
     lastName: "Other",
     dob: "1995-02-02",
-    phone: "713-555-9100",
+    phone: "7135559100",
     email: "olive@test.org",
     password: TEST_PASSWORD,
   });
@@ -101,20 +102,20 @@ describe("patient status", () => {
 
 describe("contact info", () => {
   test("the front desk updates phone, address and gender but leaves the login email alone", async () => {
-    const res = await receptionist.patch(desk(OLIVE), { phone: " 713-555-9999 ", address: "", gender: "Female", email: "changed@test.org" });
+    const res = await receptionist.patch(desk(OLIVE), { phone: " 7135559999 ", address: "", gender: "Female", email: "changed@test.org" });
     assert.equal(res.status, 200);
-    assert.deepEqual(res.body, { patientId: OLIVE, phone: "713-555-9999", email: "olive@test.org", address: null, gender: "Female" });
+    assert.deepEqual(res.body, { patientId: OLIVE, phone: "7135559999", email: "olive@test.org", address: null, gender: "Female" });
     assert.equal((await app.db.query(`SELECT username FROM patient_creds WHERE patient_id = $1`, [OLIVE])).rows[0].username, "olive@test.org");
 
     assert.deepEqual((await receptionist.patch(desk(OLIVE), { address: "1 Elm" })).body.error, "Phone is required");
-    assert.equal((await receptionist.patch(desk(99999), { phone: "713-555-0000" })).status, 404);
+    assert.equal((await receptionist.patch(desk(99999), { phone: "7135550000" })).status, 404);
     assert.equal((await receptionist.patch(desk(OLIVE), { phone: "x".repeat(21) })).status, 400);
   });
 
   test("a patient's email change that fails part way keeps the old email", async () => {
     const restore = await failWrites(app.db, "patient_creds", "UPDATE");
     try {
-      const res = await olive.put(`/api/patient/${OLIVE}/profile`, { phone: "713-555-9100", email: "olive.half@test.org", address: null, gender: null });
+      const res = await olive.put(`/api/patient/${OLIVE}/profile`, { phone: "7135559100", email: "olive.half@test.org", address: null, gender: null });
       assert.equal(res.status, 400);
     } finally {
       await restore();
@@ -267,13 +268,16 @@ describe("front desk patient view", () => {
     `);
     const visits = await app.db.query(`SELECT appointment_id FROM appointment WHERE patient_id = 1 ORDER BY appointment_date LIMIT 3`);
     const [a, b, c] = visits.rows.map((r) => r.appointment_id);
-    await app.db.query(
-      `INSERT INTO invoice (patient_id, appointment_id, amount, status) VALUES (1, $1, 100.00, 'Pending'), (1, $2, 50.00, 'Paid'), (1, $3, 20.00, 'Overdue')`,
-      [a, b, c]
-    );
-    await app.db.query(`INSERT INTO payment (invoice_id, payment_type_id, handled_by, amount_paid) SELECT invoice_id, 1, 4, 30.00 FROM invoice WHERE appointment_id = $1`, [a]);
-    // the Paid invoice really was paid, since the balance comes from payments and not the status
-    await app.db.query(`INSERT INTO payment (invoice_id, payment_type_id, handled_by, amount_paid) SELECT invoice_id, 1, 4, 50.00 FROM invoice WHERE appointment_id = $1`, [b]);
+    // the billing triggers need the employee making each change
+    await asEmployee(app.db, ids.receptionist, async (client) => {
+      await client.query(
+        `INSERT INTO invoice (patient_id, appointment_id, amount, status) VALUES (1, $1, 100.00, 'Pending'), (1, $2, 50.00, 'Paid'), (1, $3, 20.00, 'Overdue')`,
+        [a, b, c]
+      );
+      await client.query(`INSERT INTO payment (invoice_id, payment_type_id, handled_by, amount_paid) SELECT invoice_id, 1, 4, 30.00 FROM invoice WHERE appointment_id = $1`, [a]);
+      // the Paid invoice really was paid, since the balance comes from payments and not the status
+      await client.query(`INSERT INTO payment (invoice_id, payment_type_id, handled_by, amount_paid) SELECT invoice_id, 1, 4, 50.00 FROM invoice WHERE appointment_id = $1`, [b]);
+    });
 
     const res = await receptionist.get(desk(ids.patient));
     assert.equal(res.status, 200);
@@ -284,7 +288,7 @@ describe("front desk patient view", () => {
       lastName: "Patient",
       dob: "1990-01-01",
       gender: null,
-      phone: "713-555-9000",
+      phone: "7135559000",
       email: "pat@test.org",
       address: null,
       isActive: true,
@@ -344,7 +348,7 @@ describe("privacy", () => {
   test("the front desk routes are for receptionists only", async () => {
     const routes: [string, string, object?][] = [
       ["GET", desk(OLIVE)],
-      ["PATCH", desk(OLIVE), { phone: "713-555-0001" }],
+      ["PATCH", desk(OLIVE), { phone: "7135550001" }],
       ["PUT", desk(OLIVE, "/insurance"), { provider: "Nope", policyNumber: "NO-1" }],
       ["POST", desk(OLIVE, "/emergency-contacts"), contact({ firstName: "Nope" })],
       ["POST", desk(OLIVE, "/forms/1/complete")],

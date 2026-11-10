@@ -17,7 +17,7 @@ let counter = 0;
 // someone new each time, with their own email
 function person(overrides: Record<string, unknown> = {}) {
   counter += 1;
-  return { firstName: "Reg", lastName: `Tester${counter}`, dob: "1991-03-03", phone: "713-555-6000", email: `reg${counter}@test.org`, ...overrides };
+  return { firstName: "Reg", lastName: `Tester${counter}`, dob: "1991-03-03", phone: "7135556000", email: `reg${counter}@test.org`, ...overrides };
 }
 
 const signUp = (body: object) => app.client().post("/api/auth/patient/signup", { password: TEST_PASSWORD, ...body });
@@ -68,7 +68,9 @@ describe("online sign up", () => {
     const cases: [Record<string, unknown>, RegExp][] = [
       [{ firstName: " " }, /First name is required/],
       [{ lastName: undefined }, /Last name is required/],
-      [{ phone: "" }, /Phone is required/],
+      [{ phone: undefined }, /Phone is required/],
+      [{ phone: "" }, /Phone must be exactly 10 digits/],
+      [{ phone: "713-555-6000" }, /Phone must be exactly 10 digits/],
       [{ dob: "2999-01-01" }, /Date of birth can't be in the future/],
       [{ dob: "1899-12-31" }, /before 1900/],
       [{ dob: "2020-02-30" }, /Date of birth must be a valid date/],

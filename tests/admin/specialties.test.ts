@@ -130,7 +130,7 @@ describe("specialty status", () => {
   test("an inactive doctor doesn't block deactivation, and assignments are kept", async () => {
     const specialty = await createSpecialty("Allergy");
     const doctor = await admin.post("/api/admin/employees", {
-      firstName: "Allie", lastName: "Doctor", dob: "1980-01-01", email: "allie@test.org", phone: "1", employeeTypeId: 2, officeId: ids.mainOffice,
+      firstName: "Allie", lastName: "Doctor", dob: "1980-01-01", email: "allie@test.org", phone: "7135550001", employeeTypeId: 2, officeId: ids.mainOffice,
       doctor: { licenseNumber: "TX-ALLIE", licenseState: "TX", licenseExpiration: "2030-01-01", npiNumber: "4444444444", specialtyIds: [specialty.specialtyId], primarySpecialtyId: specialty.specialtyId },
     });
     assert.equal(doctor.status, 201);
@@ -165,7 +165,7 @@ describe("specialty status", () => {
 describe("employee form compatibility", () => {
   test("doctors can't be given inactive specialties", async () => {
     const res = await admin.post("/api/admin/employees", {
-      firstName: "Spec", lastName: "Doctor", dob: "1980-01-01", email: "spec@test.org", phone: "1", employeeTypeId: 2, officeId: ids.mainOffice,
+      firstName: "Spec", lastName: "Doctor", dob: "1980-01-01", email: "spec@test.org", phone: "7135550001", employeeTypeId: 2, officeId: ids.mainOffice,
       doctor: { licenseNumber: "TX-SPEC", licenseState: "TX", licenseExpiration: "2030-01-01", npiNumber: "8888888888", specialtyIds: [ids.retiredSpecialty], primarySpecialtyId: ids.retiredSpecialty },
     });
     assert.equal(res.status, 400);

@@ -42,7 +42,7 @@ before(async () => {
     lastName: "Lab",
     dob: "1992-04-04",
     email: "lee@test.org",
-    phone: "713-555-1004",
+    phone: "7135551004",
     employeeTypeId: labTypeId,
     officeId: ids.mainOffice,
   });

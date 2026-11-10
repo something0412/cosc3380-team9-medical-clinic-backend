@@ -22,6 +22,8 @@ const VISIT_KEYS = [
   "date", "timeSlotId", "startTime", "endTime", "status", "bookingChannel", "bookedByEmployeeId", "referralId",
   "checkedIn", "checkedInAt", "checkedOutAt",
 ];
+// the nurse search returns a shorter row
+const NURSE_VISIT_KEYS = ["appointmentId", "patientId", "patientName", "date", "startTime", "doctorName", "specialty", "officeName", "status", "checkedIn"];
 
 let app: Awaited<ReturnType<typeof startTestApp>>;
 let today: string;
@@ -119,23 +121,38 @@ describe("receptionist office list", () => {
 });
 
 describe("nurse list", () => {
-  test("shows the nurse's office for the day without cancelled visits", async () => {
-    const west = await nina.get("/api/nurse/appointments");
+  test("searches by date and office without cancelled visits", async () => {
+    assert.deepEqual((await nina.get("/api/nurse/my-office")).body, { officeId: ids.westsideOffice });
+    const west = await nina.get(`/api/nurse/appointments?date=${today}&officeId=${ids.westsideOffice}`);
     assert.equal(west.status, 200);
     assert.deepEqual(listIds(west.body), [v.westMorning, v.westNoon]);
-    assert.deepEqual(Object.keys(west.body[0]), VISIT_KEYS);
+    assert.deepEqual(Object.keys(west.body[0]), NURSE_VISIT_KEYS);
     // checked in shows up as its own flag while the stored status stays Scheduled
     assert.deepEqual([west.body[0].status, west.body[0].checkedIn], ["Scheduled", true]);
 
-    assert.deepEqual(listIds((await nora.get("/api/nurse/appointments")).body), [v.mainToday]);
-    assert.deepEqual(listIds((await nina.get(`/api/nurse/appointments?date=${dayFrom(today, 1)}`)).body), [v.westTomorrow]);
+    // without an office every office is searched, the same for any nurse
+    const everywhere = [v.westMorning, v.mainToday, v.westNoon];
+    assert.deepEqual(listIds((await nina.get(`/api/nurse/appointments?date=${today}`)).body), everywhere);
+    assert.deepEqual(listIds((await nora.get(`/api/nurse/appointments?date=${today}`)).body), everywhere);
+    assert.deepEqual(listIds((await nora.get(`/api/nurse/appointments?date=${today}&officeId=${ids.mainOffice}`)).body), [v.mainToday]);
+    assert.deepEqual(listIds((await nina.get(`/api/nurse/appointments?date=${dayFrom(today, 1)}&officeId=${ids.westsideOffice}`)).body), [v.westTomorrow]);
     assert.deepEqual((await nina.get(`/api/nurse/appointments?date=${dayFrom(today, -30)}`)).body, []);
   });
 
-  test("a nurse who moves offices sees the new office next time", async () => {
+  test("a name search covers every day, newest first, and a date or name is required", async () => {
+    assert.deepEqual(listIds((await nina.get("/api/nurse/appointments?name=ann")).body), [v.westTomorrow, v.westNoon, v.mainLastWeek]);
+    // cy's cancelled visit is left out
+    assert.deepEqual(listIds((await nina.get("/api/nurse/appointments?name=cole")).body), [v.mainToday]);
+    assert.deepEqual(listIds((await nina.get(`/api/nurse/appointments?name=ann&date=${today}`)).body), [v.westNoon]);
+    const neither = await nina.get("/api/nurse/appointments");
+    assert.deepEqual([neither.status, neither.body], [400, { error: "Choose a date or type a patient name" }]);
+  });
+
+  test("a nurse who moves offices gets the new office as their default next time", async () => {
     try {
       await app.db.query(`UPDATE employee SET office_id = $1 WHERE employee_id = $2`, [ids.mainOffice, ids.nurse]);
-      assert.deepEqual(listIds((await nina.get("/api/nurse/appointments")).body), [v.mainToday]);
+      assert.deepEqual((await nina.get("/api/nurse/my-office")).body, { officeId: ids.mainOffice });
+      assert.deepEqual(listIds((await nina.get(`/api/nurse/appointments?date=${today}&officeId=${ids.mainOffice}`)).body), [v.mainToday]);
     } finally {
       await app.db.query(`UPDATE employee SET office_id = $1 WHERE employee_id = $2`, [ids.westsideOffice, ids.nurse]);
     }
@@ -186,9 +203,11 @@ describe("patient name search", () => {
       const desk = await rita.get(`/api/receptionist/appointments?${query}`);
       assert.deepEqual([desk.status, listIds(desk.body.appointments)], [200, expected], `receptionist ${search}`);
       assert.deepEqual(listIds((await dora.get(`/api/doctor/appointments?${query}`)).body), expected, `doctor ${search}`);
+      const nurse = await nora.get(`/api/nurse/appointments?date=${date}&name=${encodeURIComponent(search)}`);
+      assert.deepEqual([nurse.status, listIds(nurse.body)], [200, expected], `nurse ${search}`);
     }
     // these visits are all at Westside, so the Main Street list for that day stays empty
-    assert.deepEqual(listIds((await nora.get(`/api/nurse/appointments?date=${date}`)).body), []);
+    assert.deepEqual(listIds((await nora.get(`/api/nurse/appointments?date=${date}&officeId=${ids.mainOffice}`)).body), []);
   });
 });
 
@@ -208,7 +227,7 @@ describe("list checks", () => {
   test("each list is only for its own role", async () => {
     const lists = {
       receptionist: "/api/receptionist/appointments",
-      nurse: "/api/nurse/appointments",
+      nurse: `/api/nurse/appointments?date=${today}`,
       doctor: "/api/doctor/appointments",
     };
     const clients: [string, TestClient][] = [["receptionist", rita], ["nurse", nina], ["doctor", dan], ["patient", pat], ["admin", admin], ["lab", lab]];
@@ -223,9 +242,9 @@ describe("list checks", () => {
   test("lists don't include contact, insurance or login details", async () => {
     const bodies = JSON.stringify([
       (await rita.get("/api/receptionist/appointments")).body,
-      (await nina.get("/api/nurse/appointments")).body,
+      (await nina.get(`/api/nurse/appointments?date=${today}`)).body,
       (await dan.get("/api/doctor/appointments?view=all")).body,
     ]);
-    assert.doesNotMatch(bodies, /visit@test\.org|713-555-8800|1980-05-05|password|insurance|policy/i);
+    assert.doesNotMatch(bodies, /visit@test\.org|7135558800|1980-05-05|password|insurance|policy/i);
   });
 });

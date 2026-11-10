@@ -145,7 +145,7 @@ describe("errors through the app", () => {
       firstName: "Old",
       lastName: "Date",
       dob: "0000-01-01",
-      phone: "713-555-7200",
+      phone: "7135557200",
       email: "old.date@test.org",
       password: "Test-Password-123",
     });
@@ -159,7 +159,7 @@ describe("errors through the app", () => {
       firstName: "Owen",
       lastName: "Office",
       dob: "1990-01-01",
-      phone: "713-555-7300",
+      phone: "7135557300",
       email: "owen.office@test.org",
       officeId: 99999,
       employeeTypeId: types.rows[0].employee_type_id,
