@@ -16,6 +16,13 @@ const createBody = z.object({
   price: moneySchema,
   type: typeText,
 });
+const itemBody = z.object({
+  category: z.enum(["Lab Test", "Medication"], "Category must be Lab Test or Medication"),
+  name: z.string().trim().min(1, "Name is required").max(100, "Keep the name under 100 characters"),
+  manufacturer: z.string().trim().max(100, "Keep the manufacturer under 100 characters").nullish().transform((value) => value || null),
+  price: moneySchema,
+  type: typeText,
+});
 
 // get every specialty, lab test, and medication with its price (feeId is null when it has no price yet)
 adminFeesRouter.get("/", async (_req, res) => {
@@ -66,6 +73,88 @@ adminFeesRouter.put("/:id", async (req, res) => {
   if (!result.rowCount) throw new HttpError(404, "Fee not found");
 
   res.json(result.rows[0]);
+});
+
+// add a new lab test or medication together with its price
+adminFeesRouter.post("/items", async (req, res) => {
+  const { category, name, manufacturer, price, type } = itemBody.parse(req.body);
+
+  // names are unique, compared in lowercase
+  const table = category === "Lab Test" ? "lab_test_type" : "medication";
+  const taken = await pool.query(`SELECT 1 FROM ${table} WHERE LOWER(name) = LOWER($1)`, [name]);
+  if (taken.rowCount) throw new HttpError(409, `A ${category.toLowerCase()} with that name already exists`);
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // add the lab test or medication, then its price
+    if (category === "Lab Test") {
+      const created = await client.query(
+        `INSERT INTO lab_test_type (name, cost) VALUES ($1, $2) RETURNING lab_test_type_id AS id`,
+        [name, price]
+      );
+      await client.query(
+        `INSERT INTO service_fee (category, type, name, price, lab_test_type_id) VALUES ('Lab Test', $1, $2, $3, $4)`,
+        [type, name, price, created.rows[0].id]
+      );
+    } else {
+      const created = await client.query(
+        `INSERT INTO medication (name, manufacturer) VALUES ($1, $2) RETURNING medication_id AS id`,
+        [name, manufacturer]
+      );
+      await client.query(
+        `INSERT INTO service_fee (category, type, name, price, medication_id) VALUES ('Medication', $1, $2, $3, $4)`,
+        [type, name, price, created.rows[0].id]
+      );
+    }
+
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  res.status(201).json({ message: `${name} added` });
+});
+
+// turn a lab test or medication and its price off or back on; old orders and invoices keep it
+adminFeesRouter.patch("/items/:category/:linkId/status", async (req, res) => {
+  const category = z.enum(["Lab Test", "Medication"], "Category must be Lab Test or Medication").parse(req.params.category);
+  const linkId = id.parse(req.params.linkId);
+  const { isActive } = z.object({ isActive: z.boolean("Status must be true or false") }).parse(req.body);
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // the item itself, so doctors can't order or prescribe it while it's off
+    const item =
+      category === "Lab Test"
+        ? await client.query(`UPDATE lab_test_type SET is_active = $2 WHERE lab_test_type_id = $1`, [linkId, isActive])
+        : await client.query(`UPDATE medication SET is_active = $2 WHERE medication_id = $1`, [linkId, isActive]);
+    if (!item.rowCount) throw new HttpError(404, `${category} not found`);
+
+    // its price, so it isn't billed while it's off
+    await client.query(
+      `
+      UPDATE service_fee SET is_active = $2, updated_at = now()
+      WHERE (lab_test_type_id = $1 AND $3 = 'Lab Test') OR (medication_id = $1 AND $3 = 'Medication')
+      `,
+      [linkId, isActive, category]
+    );
+
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  res.json({ message: isActive ? "Turned back on" : "Turned off" });
 });
 
 // add a price for a specialty, lab test, or medication that doesn't have one
