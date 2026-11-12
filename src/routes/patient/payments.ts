@@ -36,13 +36,15 @@ patientPaymentsRouter.post("/api/patient/:id/invoices/:invoiceId/payments", asyn
     if (owed.rows[0].tooMuch) throw new HttpError(409, `Only $${owed.rows[0].balance} is left on this invoice`);
 
     // save the payment (no card details), with no employee since I paid online
-    await client.query(
+    const saved = await client.query(
       `
       INSERT INTO payment (invoice_id, payment_type_id, handled_by, amount_paid, payment_date, status)
       SELECT $1, payment_type_id, NULL, $2, ${CLINIC_TODAY}, 'Completed' FROM payment_type WHERE name = $3 AND is_active
       `,
       [invoiceId, card.amount, card.cardType]
     );
+    // nothing is saved when that card type is turned off or missing
+    if (!saved.rowCount) throw new HttpError(409, `${card.cardType} payments aren't available right now`);
     return getInvoice(invoiceId, client);
   });
 

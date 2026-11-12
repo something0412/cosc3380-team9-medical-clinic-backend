@@ -59,13 +59,14 @@ const STAFF_TYPE_SQL = `
 // these never use the signed in user, so they skip the lookup
 const NO_USER_PATHS = [
   "/api/public",
+  "/api/auth/login",
   "/api/auth/patient/login",
   "/api/auth/patient/signup",
   "/api/auth/staff/login",
   "/api/auth/logout",
 ];
 
-async function findPatient(patientId: number | undefined): Promise<PatientUser | null> {
+export async function findPatient(patientId: number | undefined): Promise<PatientUser | null> {
   if (!patientId) return null;
   const result = await pool.query(
     `
@@ -79,7 +80,7 @@ async function findPatient(patientId: number | undefined): Promise<PatientUser |
   return result.rows[0] ?? null;
 }
 
-async function findEmployee(employeeId: number | undefined): Promise<EmployeeUser | null> {
+export async function findEmployee(employeeId: number | undefined): Promise<EmployeeUser | null> {
   if (!employeeId) return null;
   const result = await pool.query(
     `

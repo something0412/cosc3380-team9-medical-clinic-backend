@@ -71,11 +71,12 @@ nurseAppointmentsRouter.get("/api/nurse/appointments", async (req, res) => {
     JOIN time_slot ts ON ts.time_slot_id = a.time_slot_id
     WHERE a.status <> 'Cancelled'
       AND ($1::date IS NULL OR a.appointment_date = $1)
-      AND ($2 = '' OR p.first_name || ' ' || p.last_name ILIKE '%' || $2 || '%')
+      AND ($2 = '' OR p.first_name || ' ' || p.last_name ILIKE '%' || $2 || '%' ESCAPE '\\')
       AND ($3::int IS NULL OR a.office_id = $3)
     ORDER BY a.appointment_date DESC, ts.start_time, a.appointment_id
     `,
-    [date ?? null, name, officeId ?? null]
+    // a typed % or _ is part of the name, not a wildcard
+    [date ?? null, name.replace(/[\\%_]/g, (character) => `\\${character}`), officeId ?? null]
   );
   res.json(result.rows);
 });
