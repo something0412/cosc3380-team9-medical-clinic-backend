@@ -4,6 +4,7 @@ import { pool } from "../lib/db.js";
 import { withTransaction } from "../lib/transaction.js";
 import { HttpError } from "../middleware/errorHandler.js";
 import type { SessionUser } from "../middleware/sessionUser.js";
+import { canReferSql } from "./referrals.js";
 
 // doctors and nurses share the chart and patient record code, and each role has its own access rule
 export interface Clinician {
@@ -98,6 +99,7 @@ export async function listPatientsInCare(c: Clinician, search = "") {
       p.last_name AS "lastName",
       to_char(p.dob, 'YYYY-MM-DD') AS dob,
       ${c.role === "doctor" ? `EXISTS (SELECT 1 FROM patient_doctor pd WHERE pd.patient_id = p.patient_id AND pd.doctor_id = $1 AND pd.is_primary AND pd.is_active) AS "assignedToMe",` : ""}
+      ${c.role === "doctor" ? `${canReferSql("p.patient_id", "$1")} AS "canRefer",` : ""}
       (SELECT to_char(max(a.appointment_date), 'YYYY-MM-DD') FROM appointment a WHERE a.patient_id = p.patient_id AND a.status = 'Completed') AS "lastVisit",
       (
         SELECT to_char(min(a.appointment_date), 'YYYY-MM-DD') FROM appointment a
