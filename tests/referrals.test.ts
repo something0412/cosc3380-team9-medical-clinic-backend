@@ -271,6 +271,51 @@ describe("creating referrals", () => {
     assert.equal(primary.rows[0].n, 0);
   });
 
+  test("the patient list says who each doctor can refer, matching what sending a referral does", async () => {
+    const [primaryId, bookedId, visitedId, todayId] = [
+      await addDoctor(app.db, "Prima", ids.mainOffice),
+      await addDoctor(app.db, "Booked", ids.mainOffice),
+      await addDoctor(app.db, "Visited", ids.mainOffice),
+      await addDoctor(app.db, "Today", ids.mainOffice),
+    ];
+    const [primaryDoc, bookedDoc, visitedDoc, todayDoc] = await Promise.all([primaryId, bookedId, visitedId, todayId].map((id) => app.loginStaff(id)));
+    const listed = async (client: TestClient, patientId: number) => {
+      const row = (await client.get("/api/doctor/patients")).body.find((p: { patientId: number }) => p.patientId === patientId);
+      return [row.assignedToMe, row.canRefer];
+    };
+
+    const patientId = await addPatient(app.db, "Lia", "Listed");
+    await app.db.query(`INSERT INTO patient_doctor (patient_id, doctor_id, is_primary) VALUES ($1, $2, true)`, [patientId, primaryId]);
+    await addAppointment(app.db, { patientId, doctorId: bookedId, officeId: ids.mainOffice, date: dayFrom(today, 5), timeSlotId: slots[0] });
+    await addAppointment(app.db, { patientId, doctorId: visitedId, officeId: ids.mainOffice, date: dayFrom(today, -3), timeSlotId: slots[0], status: "Completed" });
+
+    // only booked for later, so the patient is listed but can't be referred yet
+    assert.deepEqual(await listed(bookedDoc, patientId), [false, false]);
+    assert.equal((await refer(bookedDoc, toCardiology(patientId))).status, 403);
+
+    // an inactive patient can't be referred by anyone
+    await app.db.query(`UPDATE patient SET is_active = false WHERE patient_id = $1`, [patientId]);
+    assert.deepEqual(await listed(visitedDoc, patientId), [false, false]);
+    assert.equal((await refer(visitedDoc, toCardiology(patientId))).status, 409);
+    await app.db.query(`UPDATE patient SET is_active = true WHERE patient_id = $1`, [patientId]);
+
+    // a doctor who saw them sends a Pending referral, and the primary doctor's own is approved
+    assert.deepEqual(await listed(visitedDoc, patientId), [false, true]);
+    assert.equal((await refer(visitedDoc, toCardiology(patientId))).body.status, "Pending");
+    assert.deepEqual(await listed(primaryDoc, patientId), [true, true]);
+    assert.equal((await refer(primaryDoc, toCardiology(patientId))).body.status, "Approved");
+
+    // with no primary doctor, an older visit isn't enough, but today's checked in primary care visit is
+    const newPatient = await addPatient(app.db, "Noel", "Listed");
+    await addAppointment(app.db, { patientId: newPatient, doctorId: visitedId, officeId: ids.mainOffice, date: dayFrom(today, -2), timeSlotId: slots[1], status: "Completed" });
+    const visit = await addAppointment(app.db, { patientId: newPatient, doctorId: todayId, officeId: ids.mainOffice, date: today, timeSlotId: slots[1] });
+    await app.db.query(`UPDATE appointment SET checked_in_at = now() WHERE appointment_id = $1`, [visit]);
+    assert.deepEqual(await listed(visitedDoc, newPatient), [false, false]);
+    assert.equal((await refer(visitedDoc, toCardiology(newPatient))).status, 409);
+    assert.deepEqual(await listed(todayDoc, newPatient), [false, true]);
+    assert.equal((await refer(todayDoc, toCardiology(newPatient))).body.status, "Approved");
+  });
+
   test("the specialist has to be someone else who actively practices the specialty", async () => {
     const patientId = await rayPatient();
     const cases: [object, string][] = [

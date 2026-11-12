@@ -103,14 +103,37 @@ export async function listSpecialists(doctorId: number) {
 }
 
 // the doctor has to be the patient's assigned doctor or have actually seen them
-const CARES_FOR_PATIENT = `
-  EXISTS (SELECT 1 FROM patient_doctor pd WHERE pd.patient_id = $1 AND pd.doctor_id = $2 AND pd.is_active)
+const caresForPatient = (patient: string, doctor: string) => `
+  EXISTS (SELECT 1 FROM patient_doctor pd WHERE pd.patient_id = ${patient} AND pd.doctor_id = ${doctor} AND pd.is_active)
   OR EXISTS (
     SELECT 1 FROM appointment a
-    WHERE a.patient_id = $1 AND a.doctor_id = $2
+    WHERE a.patient_id = ${patient} AND a.doctor_id = ${doctor}
       AND (a.status = 'Completed' OR (a.status = 'Scheduled' AND a.checked_in_at IS NOT NULL))
   )
 `;
+
+const CARES_FOR_PATIENT = caresForPatient("$1", "$2");
+
+// a checked in or completed primary care visit with this doctor today, which can make them the primary doctor
+const primaryCareVisitToday = (patient: string, doctor: string) => `
+  EXISTS (
+    SELECT 1 FROM appointment a
+    JOIN specialty sp ON sp.specialty_id = a.specialty_id
+    WHERE a.patient_id = ${patient} AND a.doctor_id = ${doctor} AND a.appointment_date = ${CLINIC_TODAY}
+      AND (a.status = 'Completed' OR (a.status = 'Scheduled' AND a.checked_in_at IS NOT NULL))
+      AND sp.name IN ('Family Medicine', 'Internal Medicine')
+  )
+`;
+
+// whether this doctor can refer the patient right now, with the same patient checks createReferral makes
+export const canReferSql = (patient: string, doctor: string) => `(
+  EXISTS (SELECT 1 FROM patient cp WHERE cp.patient_id = ${patient} AND cp.is_active)
+  AND (${caresForPatient(patient, doctor)})
+  AND (
+    EXISTS (SELECT 1 FROM patient_doctor pp WHERE pp.patient_id = ${patient} AND pp.is_primary AND pp.is_active)
+    OR ${primaryCareVisitToday(patient, doctor)}
+  )
+)`;
 
 // takes the query placeholders for the specialist and the specialty
 const specialistPractices = (doctor: string, specialty: string) => `
@@ -184,17 +207,8 @@ export async function createReferral(doctorId: number, input: NewReferral) {
 
     // no primary doctor yet: today's primary care visit with me makes me their primary doctor
     if (primaryDoctorId === null) {
-      const visit = await client.query(
-        `
-        SELECT 1 FROM appointment a
-        JOIN specialty sp ON sp.specialty_id = a.specialty_id
-        WHERE a.patient_id = $1 AND a.doctor_id = $2 AND a.appointment_date = ${CLINIC_TODAY}
-          AND (a.status = 'Completed' OR (a.status = 'Scheduled' AND a.checked_in_at IS NOT NULL))
-          AND sp.name IN ('Family Medicine', 'Internal Medicine')
-        `,
-        [input.patientId, doctorId]
-      );
-      if (!visit.rowCount) {
+      const visit = await client.query(`SELECT ${primaryCareVisitToday("$1", "$2")} AS "visitToday"`, [input.patientId, doctorId]);
+      if (!visit.rows[0].visitToday) {
         throw new HttpError(409, "This patient doesn't have a primary doctor yet. Their first Family Medicine or Internal Medicine visit sets one.");
       }
       await client.query(
