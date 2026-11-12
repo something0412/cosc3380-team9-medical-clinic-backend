@@ -561,6 +561,30 @@ describe("patients paying online", () => {
     assert.deepEqual(history[0], { ...history[0], oldStatus: "Pending", newStatus: "Paid", changedBy: "Pat Patient", changedByType: "Patient" });
   });
 
+  test("a card type that's turned off or missing gives an error and saves nothing", async () => {
+    const invoiceId = await invoiceFor("60.00");
+    const paying = (cardType: string) => pat.post(`/api/patient/${ids.patient}/invoices/${invoiceId}/payments`, { ...card, cardType, amount: "20.00" });
+    const before = await counts();
+
+    await app.db.query(`UPDATE payment_type SET is_active = false WHERE payment_type_id = $1`, [cardId]);
+    try {
+      const off = await paying("Credit Card");
+      assert.deepEqual([off.status, off.body], [409, { error: "Credit Card payments aren't available right now" }]);
+    } finally {
+      await app.db.query(`UPDATE payment_type SET is_active = true WHERE payment_type_id = $1`, [cardId]);
+    }
+    // these tests never add a Debit Card type
+    const missing = await paying("Debit Card");
+    assert.deepEqual([missing.status, missing.body], [409, { error: "Debit Card payments aren't available right now" }]);
+
+    assert.deepEqual(await counts(), before);
+    assert.deepEqual(await invoiceRow(invoiceId), { status: "Pending", paid: "0" });
+
+    // the same payment goes through once the card type is available
+    const paid = await paying("Credit Card");
+    assert.deepEqual([paid.status, paid.body.paid, paid.body.balance, paid.body.status], [201, "20.00", "40.00", "Pending"]);
+  });
+
   test("a patient can't pay someone else's invoice", async () => {
     const invoiceId = await invoiceFor("40.00", oliveId);
     const before = await counts();

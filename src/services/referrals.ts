@@ -112,34 +112,47 @@ const CARES_FOR_PATIENT = `
   )
 `;
 
-const SPECIALIST_PRACTICES = `
+// takes the query placeholders for the specialist and the specialty
+const specialistPractices = (doctor: string, specialty: string) => `
   EXISTS (
     SELECT 1
     FROM doctor_specialty ds
     JOIN specialty sp ON sp.specialty_id = ds.specialty_id AND sp.is_active
     JOIN employee e ON e.employee_id = ds.doctor_id AND e.is_active
-    WHERE ds.doctor_id = $3 AND ds.specialty_id = $4 AND ds.is_active
+    WHERE ds.doctor_id = ${doctor} AND ds.specialty_id = ${specialty} AND ds.is_active
   )
 `;
 
-// says why a referral couldn't be created, checking the patient before anything about the specialist
-async function refuseReferral(client: PoolClient, doctorId: number, input: NewReferral): Promise<never> {
+// the referring doctor is active, and the patient exists, is in their care and is active
+async function checkPatientCare(client: PoolClient, doctorId: number, input: NewReferral) {
   const result = await client.query(
     `
     SELECT
       (SELECT is_active FROM employee WHERE employee_id = $2) AS "referrerActive",
       (SELECT is_active FROM patient WHERE patient_id = $1) AS "patientActive",
-      ${CARES_FOR_PATIENT} AS "caresForPatient",
-      ${SPECIALIST_PRACTICES} AS "specialistPractices",
-      COALESCE($5::date, ${CLINIC_TODAY} + ${DEFAULT_DAYS}) > ${CLINIC_TODAY} AS "expiresLater"
+      ${CARES_FOR_PATIENT} AS "caresForPatient"
     `,
-    [input.patientId, doctorId, input.specialistDoctorId, input.specialtyId, input.expirationDate ?? null]
+    [input.patientId, doctorId]
   );
   const row = result.rows[0];
   if (!row.referrerActive) throw new HttpError(403, "Your account is no longer active");
   if (row.patientActive === null) throw new HttpError(404, "Patient not found");
   if (!row.caresForPatient) throw new HttpError(403, "This patient isn't under your care");
   if (!row.patientActive) throw new HttpError(409, "This patient account is inactive");
+}
+
+// says why a referral couldn't be created, checking the patient before anything about the specialist
+async function refuseReferral(client: PoolClient, doctorId: number, input: NewReferral): Promise<never> {
+  await checkPatientCare(client, doctorId, input);
+  const result = await client.query(
+    `
+    SELECT
+      ${specialistPractices("$1", "$2")} AS "specialistPractices",
+      COALESCE($3::date, ${CLINIC_TODAY} + ${DEFAULT_DAYS}) > ${CLINIC_TODAY} AS "expiresLater"
+    `,
+    [input.specialistDoctorId, input.specialtyId, input.expirationDate ?? null]
+  );
+  const row = result.rows[0];
   if (input.specialistDoctorId === doctorId) throw new HttpError(400, "You can't refer a patient to yourself");
   if (!row.specialistPractices) throw new HttpError(400, "That specialist doesn't practice this specialty");
   if (!row.expiresLater) throw new HttpError(400, "The expiration date has to be after today");
@@ -161,6 +174,8 @@ export async function createReferral(doctorId: number, input: NewReferral) {
     // the referral trigger checks who is sending it
     await client.query(`SELECT set_config('app.employee_id', $1, true)`, [String(doctorId)]);
     await lockPeople(client, doctorId, input);
+    // the patient and the care relationship come before the primary doctor rules
+    await checkPatientCare(client, doctorId, input);
 
     const primary = await client.query(`SELECT doctor_id AS "doctorId" FROM patient_doctor WHERE patient_id = $1 AND is_primary AND is_active`, [
       input.patientId,
@@ -201,7 +216,7 @@ export async function createReferral(doctorId: number, input: NewReferral) {
         AND EXISTS (SELECT 1 FROM patient WHERE patient_id = $1 AND is_active)
         AND (${CARES_FOR_PATIENT})
         AND $2 <> $3
-        AND ${SPECIALIST_PRACTICES}
+        AND ${specialistPractices("$3", "$4")}
         AND COALESCE($5::date, ${CLINIC_TODAY} + ${DEFAULT_DAYS}) > ${CLINIC_TODAY}
       RETURNING referral_id AS "referralId"
       `,

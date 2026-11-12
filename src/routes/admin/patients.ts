@@ -75,13 +75,8 @@ adminPatientsRouter.put("/:id", async (req, res) => {
   const patientId = idParam.parse(req.params.id);
   const { doctorId, newPassword } = patientEditSchema.parse(req.body);
 
-  if (doctorId !== null) {
-    const doctor = await pool.query(
-      `SELECT 1 FROM doctor d JOIN employee e ON e.employee_id = d.employee_id WHERE d.employee_id = $1 AND e.is_active`,
-      [doctorId]
-    );
-    if (!doctor.rowCount) throw new HttpError(400, "Choose an active doctor");
-  }
+  const patient = await pool.query(`SELECT 1 FROM patient WHERE patient_id = $1`, [patientId]);
+  if (!patient.rowCount) throw new HttpError(404, "Patient not found");
   const login = await pool.query(`SELECT 1 FROM patient_creds WHERE patient_id = $1`, [patientId]);
   if (newPassword && !login.rowCount) throw new HttpError(400, "This patient doesn't have a portal login yet");
   const passwordHash = newPassword ? await hashPassword(newPassword) : null;
@@ -91,6 +86,14 @@ adminPatientsRouter.put("/:id", async (req, res) => {
     const current = await client.query(`SELECT doctor_id FROM patient_doctor WHERE patient_id = $1 AND is_primary AND is_active`, [patientId]);
     const currentId = current.rows[0]?.doctor_id ?? null;
     if (currentId !== doctorId) {
+      // only a new primary doctor has to be active, so an inactive current one still allows a password reset
+      if (doctorId !== null) {
+        const doctor = await client.query(
+          `SELECT 1 FROM doctor d JOIN employee e ON e.employee_id = d.employee_id WHERE d.employee_id = $1 AND e.is_active`,
+          [doctorId]
+        );
+        if (!doctor.rowCount) throw new HttpError(400, "Choose an active doctor");
+      }
       // the old primary doctor stays assigned, just not primary
       await client.query(`UPDATE patient_doctor SET is_primary = false WHERE patient_id = $1 AND is_primary`, [patientId]);
       if (doctorId !== null) {
