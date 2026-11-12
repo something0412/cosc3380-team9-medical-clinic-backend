@@ -38,8 +38,31 @@ patientPortalRouter.get("/api/patient/:id/visits/:appointmentId", async (req, re
 
 // the same appointment list the staff see, with the date and time names this page already uses
 patientPortalRouter.get("/api/patient/:id/appointments", async (req, res) => {
-    const appointments = await listAppointments({ patientId: Number(req.params.id) }, { when: "all" });
-    res.json(appointments.map((a) => ({ ...a, appointmentDate: a.date, appointmentTime: a.startTime })));
+    const patientId = Number(req.params.id);
+    const appointments = await listAppointments({ patientId }, { when: "all" });
+
+    // when each cancelled appointment was cancelled
+    const cancelTimes = await pool.query(
+        `
+        SELECT
+            h.appointment_id AS "appointmentId",
+            max(h.changed_at) AS "cancelledAt"
+        FROM appointment_history h
+        JOIN appointment a ON a.appointment_id = h.appointment_id
+        WHERE a.patient_id = $1
+          AND a.status = 'Cancelled'
+          AND h.new_status = 'Cancelled'
+        GROUP BY h.appointment_id
+        `,
+        [patientId]
+    );
+
+    res.json(appointments.map((a) => ({
+        ...a,
+        appointmentDate: a.date,
+        appointmentTime: a.startTime,
+        cancelledAt: cancelTimes.rows.find((c) => c.appointmentId === a.appointmentId)?.cancelledAt ?? null,
+    })));
 });
 
 
