@@ -440,16 +440,27 @@ export interface VitalsReadings {
   height?: number | null;
 }
 
-// every reading is a new row, so earlier readings stay as they were
+// a visit has one vitals row: the first save creates it, later saves replace its readings and who recorded them
 export async function recordVitals(c: Clinician, appointmentId: number, readings: VitalsReadings) {
   return withTransaction(async (client) => {
     const { patientId } = await lockVisit(client, appointmentId, c);
-    const created = await client.query(
+    const saved = await client.query(
       `
       INSERT INTO patient_vitals (patient_id, appointment_id, recorded_by_employee_id, temperature, heartrate_bpm, systolic_bp, diastolic_bp,
         respiratory_rate, oxygen_saturation, weight_lbs, height_inches, recorded_at)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, ${CLINIC_NOW})
-      RETURNING vitals_id
+      ON CONFLICT (appointment_id) WHERE appointment_id IS NOT NULL DO UPDATE SET
+        recorded_by_employee_id = EXCLUDED.recorded_by_employee_id,
+        temperature = EXCLUDED.temperature,
+        heartrate_bpm = EXCLUDED.heartrate_bpm,
+        systolic_bp = EXCLUDED.systolic_bp,
+        diastolic_bp = EXCLUDED.diastolic_bp,
+        respiratory_rate = EXCLUDED.respiratory_rate,
+        oxygen_saturation = EXCLUDED.oxygen_saturation,
+        weight_lbs = EXCLUDED.weight_lbs,
+        height_inches = EXCLUDED.height_inches,
+        recorded_at = EXCLUDED.recorded_at
+      RETURNING vitals_id, xmax = 0 AS created
       `,
       [
         patientId,
@@ -466,9 +477,9 @@ export async function recordVitals(c: Clinician, appointmentId: number, readings
       ]
     );
     const vitals = await client.query(`SELECT ${VITALS_COLUMNS} FROM patient_vitals v JOIN employee e ON e.employee_id = v.recorded_by_employee_id WHERE v.vitals_id = $1`, [
-      created.rows[0].vitals_id,
+      saved.rows[0].vitals_id,
     ]);
-    return vitals.rows[0];
+    return { vitals: vitals.rows[0], created: saved.rows[0].created as boolean };
   });
 }
 

@@ -103,10 +103,11 @@ nurseAppointmentsRouter.get("/api/nurse/appointments/:id", async (req, res) => {
   });
 });
 
-// record vitals for a visit
+// save the visit's vitals: 201 when they're first recorded, 200 when they replace the saved ones
 nurseAppointmentsRouter.post("/api/nurse/appointments/:id/vitals", async (req, res) => {
   const appointmentId = id("an appointment").parse(req.params.id);
-  res.status(201).json(await recordVitals(asClinician(req.user, "nurse"), appointmentId, vitalsBody.parse(req.body)));
+  const { vitals, created } = await recordVitals(asClinician(req.user, "nurse"), appointmentId, vitalsBody.parse(req.body));
+  res.status(created ? 201 : 200).json(vitals);
 });
 
 // add a nursing note to a visit

@@ -139,10 +139,9 @@ describe("a patient's visit from sign up to the bill", () => {
     assert.equal(find(await ok(willa.get(`/api/patient/${willaId}/appointments`)), "appointmentId", visit.today)?.status, "Completed");
     assert.equal(find(await ok(gina.get("/api/doctor/appointments?view=all")), "appointmentId", visit.today)?.status, "Completed");
     const records = await ok(willa.get(`/api/patient/${willaId}/records`));
-    assert.deepEqual(
-      [records.visits[0].appointmentId, records.visits[0].visitDate, records.visits[0].visitReason, records.visits[0].diagnosis],
-      [visit.today, today, "Cough", "Acute bronchitis"]
-    );
+    assert.deepEqual([records.visits[0].appointmentId, records.visits[0].visitDate], [visit.today, today]);
+    const visitDetails = await ok(willa.get(`/api/patient/${willaId}/visits/${visit.today}`));
+    assert.deepEqual([visitDetails.summary.visitReason, visitDetails.diagnoses[0].name], ["Cough", "Acute bronchitis"]);
     assert.equal((await ok(willa.get(`/api/patient/${willaId}/dashboard`))).upcomingAppointments, 0);
   });
 

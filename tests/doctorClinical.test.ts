@@ -264,7 +264,7 @@ describe("which patients a doctor can see", () => {
     assert.equal(ids_((await dan.get("/api/doctor/patients")).body).includes(patientId), false);
     assert.equal((await dan.get(`/api/doctor/prescriptions/${prescription.rows[0].prescription_id}`)).status, 404);
     assert.equal((await dan.get(`/api/doctor/lab-orders/${labOrder.rows[0].lab_order_id}`)).status, 404);
-    assert.equal((await order(dan, { patientId, labTestTypeId: tests.lipid })).status, 403);
+    assert.equal((await order(dan, { patientId, labTestTypeId: tests.lipid, appointmentId: people.seenVisit })).status, 403);
 
     // once the referred visit is booked, the specialist cares for the patient
     await visit(patientId, ids.doctor, "Scheduled", { date: dayFrom(today, 7), slot: slots.noon });
@@ -280,7 +280,7 @@ describe("which patients a doctor can see", () => {
       assert.equal((await summary(client, people.seenVisit, { notes: "x" })).status, status, `${name} summary`);
       assert.equal((await diagnose(client, people.seenVisit, [{ name: "x" }])).status, status, `${name} diagnoses`);
       assert.equal((await prescribe(client, people.seenVisit, [{ medicationId: meds.amox, dosage: "1" }])).status, status, `${name} prescription`);
-      assert.equal((await order(client, { patientId: people.seen, labTestTypeId: tests.cbc })).status, status, `${name} lab order`);
+      assert.equal((await order(client, { patientId: people.seen, labTestTypeId: tests.cbc, appointmentId: people.seenVisit })).status, status, `${name} lab order`);
     }
     assert.equal(await count(`SELECT count(*) AS n FROM lab_order`), labOrdersBefore);
   });
@@ -426,9 +426,14 @@ describe("diagnoses", () => {
     const appointmentId = await visit(people.seen, ids.doctor);
     await summary(dan, appointmentId, { visitReason: "Stomach ache", notes: "Mild" });
     await diagnose(dan, appointmentId, [{ name: "Gastritis" }, { name: "Reflux" }]);
+    // the visit is listed in the patient's records, and its details have the summary and diagnoses
     const records = await pat.get(`/api/patient/${people.seen}/records`);
-    const shown = records.body.visits.find((v: { appointmentId: number }) => v.appointmentId === appointmentId);
-    assert.deepEqual([shown.visitReason, shown.diagnosis, shown.notes], ["Stomach ache", "Gastritis, Reflux", "Mild"]);
+    assert.ok(records.body.visits.some((v: { appointmentId: number }) => v.appointmentId === appointmentId), "visit listed");
+    const shown = (await pat.get(`/api/patient/${people.seen}/visits/${appointmentId}`)).body;
+    assert.deepEqual(
+      [shown.summary.visitReason, shown.diagnoses.map((d: { name: string }) => d.name), shown.summary.notes],
+      ["Stomach ache", ["Gastritis", "Reflux"], "Mild"]
+    );
     const visitView = (await dan.get(`/api/doctor/appointments/${appointmentId}`)).body;
     assert.deepEqual([visitView.summary.visitReason, visitView.diagnoses.length, visitView.missingForms], ["Stomach ache", 2, ["Intake"]]);
     assert.equal((await ula.get(`/api/doctor/appointments/${appointmentId}`)).status, 404);
@@ -446,8 +451,8 @@ describe("diagnoses", () => {
     assert.deepEqual((await dan.get(`/api/doctor/appointments/${appointmentId}`)).body.diagnoses.map((d: { name: string }) => d.name), ["Allergies"]);
     const chartVisit = (await dan.get(`/api/doctor/patients/${people.seen}`)).body.visits.find((v: { appointmentId: number }) => v.appointmentId === appointmentId);
     assert.deepEqual(chartVisit.diagnoses, ["Allergies"]);
-    const shown = (await pat.get(`/api/patient/${people.seen}/records`)).body.visits.find((v: { appointmentId: number }) => v.appointmentId === appointmentId);
-    assert.equal(shown.diagnosis, "Allergies");
+    const shown = (await pat.get(`/api/patient/${people.seen}/visits/${appointmentId}`)).body;
+    assert.deepEqual(shown.diagnoses.map((d: { name: string }) => d.name), ["Allergies"]);
     assert.deepEqual((await app.db.query(`SELECT is_active FROM visit_diagnosis WHERE visit_diagnosis_id = $1`, [sinusitis])).rows, [{ is_active: false }]);
 
     const again = await remove(dan, sinusitis);
@@ -559,33 +564,50 @@ describe("prescriptions", () => {
 });
 
 describe("lab orders", () => {
-  test("a doctor orders a test for their patient, with or without a visit", async () => {
-    const res = await order(dan, { patientId: people.assigned, labTestTypeId: tests.cbc, orderedBy: ulaId });
+  // Dan's visits the orders below belong to
+  const labVisits: Record<string, number> = {};
+
+  before(async () => {
+    labVisits.assigned = await visit(people.assigned, ids.doctor);
+    labVisits.booked = await visit(people.booked, ids.doctor);
+  });
+
+  test("a doctor orders a test for a visit, and a visit is required", async () => {
+    const res = await order(dan, { patientId: people.assigned, labTestTypeId: tests.cbc, appointmentId: labVisits.assigned, orderedBy: ulaId });
     assert.equal(res.status, 201, JSON.stringify(res.body));
     assert.deepEqual(
       [res.body.patientId, res.body.labTestTypeId, res.body.status, res.body.orderDate, res.body.orderedById, res.body.appointmentId, res.body.resultNotes],
-      [people.assigned, tests.cbc, "Ordered", today, ids.doctor, null, null]
+      [people.assigned, tests.cbc, "Ordered", today, ids.doctor, labVisits.assigned, null]
     );
     const appointmentId = await visit(people.seen, ids.doctor);
     const linked = await order(dan, { patientId: people.seen, labTestTypeId: tests.lipid, appointmentId });
     assert.deepEqual([linked.status, linked.body.appointmentId], [201, appointmentId]);
+
+    // without a visit nothing is ordered
+    const noVisit = await order(dan, { patientId: people.seen, labTestTypeId: tests.cbc });
+    assert.equal(noVisit.status, 400);
+
+    // the visit page lists every test ordered for it
+    const visitPage = (await dan.get(`/api/doctor/appointments/${appointmentId}`)).body;
+    assert.deepEqual(visitPage.labOrders.map((l: { labOrderId: number; status: string }) => [l.labOrderId, l.status]), [[linked.body.labOrderId, "Ordered"]]);
   });
 
-  test("bad patients, visits and tests are rejected, and an open order isn't repeated", async () => {
-    assert.equal((await order(dan, { patientId: people.stranger, labTestTypeId: tests.cbc })).status, 403);
-    assert.equal((await order(dan, { patientId: 999999, labTestTypeId: tests.cbc })).status, 404);
-    assert.deepEqual((await order(dan, { patientId: people.seen, labTestTypeId: tests.retired })).body, { error: "Choose an active lab test" });
-    assert.equal((await order(dan, { patientId: people.seen, labTestTypeId: 999999 })).status, 400);
+  test("bad patients, visits and tests are rejected, and an open order isn't repeated for the same visit", async () => {
+    assert.equal((await order(dan, { patientId: people.stranger, labTestTypeId: tests.cbc, appointmentId: people.seenVisit })).status, 403);
+    assert.equal((await order(dan, { patientId: 999999, labTestTypeId: tests.cbc, appointmentId: people.seenVisit })).status, 404);
+    assert.deepEqual((await order(dan, { patientId: people.seen, labTestTypeId: tests.retired, appointmentId: people.seenVisit })).body, { error: "Choose an active lab test" });
+    assert.equal((await order(dan, { patientId: people.seen, labTestTypeId: 999999, appointmentId: people.seenVisit })).status, 400);
     const othersVisit = await visit(people.booked, ids.doctor);
     assert.equal((await order(dan, { patientId: people.seen, labTestTypeId: tests.cbc, appointmentId: othersVisit })).status, 404);
     const cancelled = await visit(people.seen, ids.doctor, "Cancelled");
     assert.equal((await order(dan, { patientId: people.seen, labTestTypeId: tests.cbc, appointmentId: cancelled })).status, 409);
-    const repeat = await order(dan, { patientId: people.assigned, labTestTypeId: tests.cbc });
-    assert.deepEqual([repeat.status, repeat.body.error], [409, "This test is already ordered for the patient and doesn't have a result yet"]);
+    const repeat = await order(dan, { patientId: people.assigned, labTestTypeId: tests.cbc, appointmentId: labVisits.assigned });
+    assert.deepEqual([repeat.status, repeat.body.error], [409, "This test is already ordered for this visit and doesn't have a result yet"]);
   });
 
   test("two identical orders at once make one", async () => {
-    const results = await Promise.all([order(dan, { patientId: people.booked, labTestTypeId: tests.cbc }), order(dan, { patientId: people.booked, labTestTypeId: tests.cbc })]);
+    const body = { patientId: people.booked, labTestTypeId: tests.cbc, appointmentId: labVisits.booked };
+    const results = await Promise.all([order(dan, body), order(dan, body)]);
     assert.deepEqual(statuses(results), [201, 409]);
     assert.equal(await count(`SELECT count(*) AS n FROM lab_order WHERE patient_id = $1 AND lab_test_type_id = $2`, [people.booked, tests.cbc]), 1);
   });
@@ -605,21 +627,21 @@ describe("lab orders", () => {
 
   test("an order can be cancelled only before the lab starts it", async () => {
     const patientId = await addPatient(app.db, "Lia", "Labs");
-    await visit(patientId, ids.doctor, "Scheduled", { date: dayFrom(today, 6), slot: slots.noon });
-    const created = (await order(dan, { patientId, labTestTypeId: tests.lipid })).body;
+    const appointmentId = await visit(patientId, ids.doctor, "Scheduled", { date: dayFrom(today, 6), slot: slots.noon });
+    const created = (await order(dan, { patientId, labTestTypeId: tests.lipid, appointmentId })).body;
     assert.equal((await ula.patch(`/api/doctor/lab-orders/${created.labOrderId}/cancel`)).status, 404);
     const cancelled = await dan.patch(`/api/doctor/lab-orders/${created.labOrderId}/cancel`);
     assert.deepEqual([cancelled.status, cancelled.body.status], [200, "Cancelled"]);
     assert.equal((await dan.patch(`/api/doctor/lab-orders/${created.labOrderId}/cancel`)).status, 409);
-    assert.equal((await order(dan, { patientId, labTestTypeId: tests.lipid })).status, 201);
+    assert.equal((await order(dan, { patientId, labTestTypeId: tests.lipid, appointmentId })).status, 201);
 
-    const started = (await order(dan, { patientId: people.assigned, labTestTypeId: tests.lipid })).body;
+    const started = (await order(dan, { patientId: people.assigned, labTestTypeId: tests.lipid, appointmentId: labVisits.assigned })).body;
     assert.equal((await lab.patch(`/api/lab/orders/${started.labOrderId}/start`)).status, 200);
     const late = await dan.patch(`/api/doctor/lab-orders/${started.labOrderId}/cancel`);
     assert.deepEqual([late.status, late.body.error], [409, "Only orders the lab hasn't started can be cancelled. This one is InProgress."]);
     assert.equal((await app.db.query(`SELECT status FROM lab_order WHERE lab_order_id = $1`, [started.labOrderId])).rows[0].status, "InProgress");
 
-    const raced = (await order(dan, { patientId, labTestTypeId: tests.cbc })).body;
+    const raced = (await order(dan, { patientId, labTestTypeId: tests.cbc, appointmentId })).body;
     const [cancel, start] = await Promise.all([dan.patch(`/api/doctor/lab-orders/${raced.labOrderId}/cancel`), lab.patch(`/api/lab/orders/${raced.labOrderId}/start`)]);
     const { rows } = await app.db.query(`SELECT status FROM lab_order WHERE lab_order_id = $1`, [raced.labOrderId]);
     assert.ok((cancel.status === 200 && rows[0].status === "Cancelled") || (start.status === 200 && rows[0].status === "InProgress"), `cancel ${cancel.status}, start ${start.status}, now ${rows[0].status}`);

@@ -2,7 +2,7 @@
 
 This folder has the SQL for the Medical Clinic database. The live PostgreSQL database is hosted on Supabase.
 
-- `schema.sql` is a snapshot of the live database structure (all 46 tables with their relationships, constraints, triggers and trigger functions, no patient or employee records). It includes every migration through 019.
+- `schema.sql` is a snapshot of the live database structure (all 46 tables with their relationships, constraints, triggers and trigger functions, no patient or employee records). It includes every migration through 021.
 - `seed.sql` is for fictional sample data. It's empty right now.
 - `migrations/` has the SQL scripts for database changes.
 
@@ -33,6 +33,8 @@ All migrations below are applied to the shared Supabase database. Don't run them
 | 017 `primary_doctor` | A patient's first completed primary care visit sets their primary doctor; one primary doctor per patient (trigger) |
 | 018 `referral_and_payment_checks` | Specialist visits need an approved referral; payments can't go over the balance; Internal Medicine also counts as primary care (triggers) |
 | 019 `referral_primary_approval` | Referrals need a reason and are approved or denied (with a reason) by the patient's primary doctor (trigger) |
+| 020 `one_vitals_per_visit` | Each visit has at most one vitals row; saving again updates it |
+| 021 `follow_up_lab_billing` | A lab test ordered after a visit's invoice is paid is added to it, reopening it as Pending with the new balance (trigger) |
 
 ## Triggers
 
@@ -49,7 +51,7 @@ The database has 16 triggers:
 | `invoice` | `invoice_check_trigger` | Invoices can't be deleted or changed once Void, and every change says who made it |
 | `invoice` | `invoice_history_trigger` | Records invoice status changes in `billing_history` |
 | `invoice_item` | `invoice_item_total_trigger` | Keeps the invoice total equal to its lines, then lets insurance pay |
-| `lab_order` | `lab_order_billing_trigger` | Adds or removes lab tests on the visit's unpaid invoice |
+| `lab_order` | `lab_order_billing_trigger` | Adds lab tests to the visit's invoice, reopening it if it was paid; removes cancelled ones from an unpaid invoice |
 | `prescription_item` | `prescription_item_billing_trigger` | Adds or removes medications on the visit's unpaid invoice |
 | `payment` | `payment_check_trigger` | Payments can't be deleted; refund steps happen in order; patients only pay their own invoices by card |
 | `payment` | `payment_history_trigger` | Records payment changes and keeps the invoice Paid or Pending |

@@ -78,7 +78,13 @@ async function whileHeld(change: string, params: unknown[], send: () => Promise<
 
 const vitals = (client: TestClient, appointmentId: number, body: object) => client.post(`/api/nurse/appointments/${appointmentId}/vitals`, body);
 const note = (client: TestClient, appointmentId: number, text: string) => client.post(`/api/nurse/appointments/${appointmentId}/nursing-notes`, { note: text });
-const order = (labTestTypeId: number, patientId: number) => dan.post("/api/doctor/lab-orders", { patientId, labTestTypeId });
+// lab orders belong to a visit, so each order gets its own past visit with Dan on a day nothing else uses
+let labDaysBack = 200;
+async function order(labTestTypeId: number, patientId: number) {
+  labDaysBack += 1;
+  const { appointmentId } = await visitAt(ids.mainOffice, { doctorId: ids.doctor, patientId, date: dayFrom(today, -labDaysBack), status: "Completed" });
+  return dan.post("/api/doctor/lab-orders", { patientId, labTestTypeId, appointmentId });
+}
 
 before(async () => {
   await resetDatabase();
@@ -217,21 +223,24 @@ describe("which patients a nurse can see", () => {
 });
 
 describe("vitals", () => {
-  test("a nurse records vitals for a checked in visit, and earlier readings stay as they were", async () => {
+  test("a nurse records vitals for a checked in visit, and saving again replaces that one record", async () => {
     const { patientId, appointmentId } = await arrivedAtWestside();
     const reading = { temperature: 98.6, heartRate: 72, systolic: 120, diastolic: 80, respiratoryRate: 16, oxygenSaturation: 98, weight: 150.5, height: 65 };
     const first = await vitals(nina, appointmentId, reading);
     assert.equal(first.status, 201, JSON.stringify(first.body));
     assert.deepEqual({ ...first.body, vitalsId: 0 }, { vitalsId: 0, appointmentId, recordedAt: `${today} 12:00`, recordedBy: "Nina Nurse", ...reading });
 
-    assert.equal((await vitals(nell, appointmentId, { heartRate: 88 })).status, 201);
-    const saved = await app.db.query(`SELECT patient_id, recorded_by_employee_id, heartrate_bpm FROM patient_vitals WHERE appointment_id = $1 ORDER BY vitals_id`, [appointmentId]);
+    // the second save updates the same row, every reading is replaced, and it now shows who changed it
+    const second = await vitals(nell, appointmentId, { heartRate: 88 });
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    assert.equal(second.body.vitalsId, first.body.vitalsId);
+    const saved = await app.db.query(
+      `SELECT vitals_id, patient_id, recorded_by_employee_id, heartrate_bpm, temperature FROM patient_vitals WHERE appointment_id = $1`,
+      [appointmentId]
+    );
     assert.deepEqual(
-      saved.rows.map((r) => [r.patient_id, r.recorded_by_employee_id, r.heartrate_bpm]),
-      [
-        [patientId, ids.nurse, 72],
-        [patientId, nellId, 88],
-      ]
+      saved.rows.map((r) => [r.vitals_id, r.patient_id, r.recorded_by_employee_id, r.heartrate_bpm, r.temperature]),
+      [[first.body.vitalsId, patientId, nellId, 88, null]]
     );
   });
 
