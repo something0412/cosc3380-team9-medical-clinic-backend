@@ -231,9 +231,54 @@ describe("activation and deactivation", () => {
     assert.deepEqual((await admin.patch(`/api/admin/staff/${doctor.employeeId}/status`, { isActive: false })).body.error, "1 upcoming appointment is booked with this doctor. Reschedule or cancel it first.");
 
     await app.db.query(`UPDATE appointment SET status = 'Cancelled' WHERE appointment_id = $1`, [upcoming.appointmentId]);
+    // the finished Family Medicine visit made this doctor the primary doctor for that patient, so that has to change first
+    assert.deepEqual(
+      (await admin.patch(`/api/admin/employees/${doctor.employeeId}/status`, { isActive: false })).body.error,
+      "This doctor is the primary doctor for 1 active patient. Choose a new primary doctor for that patient first."
+    );
+    assert.equal((await admin.put(`/api/admin/patients/${arrived.patientId}`, { doctorId: null })).status, 204);
     assert.equal((await admin.patch(`/api/admin/employees/${doctor.employeeId}/status`, { isActive: false })).status, 200);
     const kept = await app.db.query(`SELECT status FROM appointment WHERE appointment_id = ANY($1::int[]) ORDER BY appointment_id`, [history.map((h) => h.appointmentId)]);
     assert.deepEqual(kept.rows.map((r) => r.status), ["Completed", "No Show", "Cancelled"]);
+  });
+
+  test("a primary doctor or one with referrals to decide stays active until those are handled", async () => {
+    const doctor = await newDoctor();
+    const referrer = await newDoctor();
+    assert.equal((await admin.post(`/api/admin/employees/${doctor.employeeId}/login`, { username: `primary${doctor.employeeId}`, password: TEST_PASSWORD })).status, 201);
+    const deactivate = () => admin.patch(`/api/admin/employees/${doctor.employeeId}/status`, { isActive: false });
+    const isActive = async () => (await row(`SELECT is_active FROM employee WHERE employee_id = $1`, [doctor.employeeId])).is_active;
+    const primaryFor = async (patientId: number) =>
+      app.db.query(`INSERT INTO patient_doctor (patient_id, doctor_id, is_primary, is_active) VALUES ($1, $2, true, true)`, [patientId, doctor.employeeId]);
+
+    const active = await addPatient(app.db, "Pri", "Active");
+    await primaryFor(active);
+    const blocked = await deactivate();
+    assert.deepEqual([blocked.status, blocked.body.error], [409, "This doctor is the primary doctor for 1 active patient. Choose a new primary doctor for that patient first."]);
+    assert.equal(await isActive(), true);
+    assert.equal(await app.staffLoginStatus(doctor.employeeId), 200);
+
+    // an ended assignment and an inactive patient are not counted
+    await app.db.query(`UPDATE patient_doctor SET is_active = false WHERE patient_id = $1`, [active]);
+    const inactive = await addPatient(app.db, "Pri", "Inactive");
+    await primaryFor(inactive);
+    await app.db.query(`UPDATE patient SET is_active = false WHERE patient_id = $1`, [inactive]);
+
+    // a pending referral waits for this doctor even after the patient gets a new primary doctor
+    const referred = await addPatient(app.db, "Ref", "Waiting");
+    const card = { referringDoctorId: referrer.employeeId, primaryDoctorId: doctor.employeeId, specialistDoctorId: ids.doctor, specialtyId: ids.cardiology };
+    const waiting = await addReferral(app.db, { ...card, patientId: referred, issued: today, expires: dayFrom(today, 30) });
+    await addReferral(app.db, { ...card, patientId: referred, issued: dayFrom(today, -20), expires: dayFrom(today, -1) });
+    await addReferral(app.db, { ...card, patientId: referred, issued: today, expires: dayFrom(today, 30), status: "Denied" });
+    await app.db.query(`UPDATE patient_doctor SET is_primary = false WHERE patient_id = $1`, [referred]);
+    // only the open one counts, not the expired or denied ones
+    assert.deepEqual((await deactivate()).body, { error: "1 referral is waiting for this doctor to approve or deny. They have to be decided first." });
+    assert.equal(await isActive(), true);
+
+    await asEmployee(app.db, doctor.employeeId, (client) => client.query(`UPDATE referral SET status = 'Approved' WHERE referral_id = $1`, [waiting]));
+    const off = await deactivate();
+    assert.deepEqual([off.status, off.body.isActive], [200, false]);
+    assert.equal(await app.staffLoginStatus(doctor.employeeId), 401);
   });
 
   test("a booking in progress is waited for before a doctor is deactivated, and the other way around", async () => {

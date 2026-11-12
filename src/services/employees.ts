@@ -5,6 +5,7 @@ import { pool } from "../lib/db.js";
 import { hashPassword } from "../lib/password.js";
 import { withTransaction } from "../lib/transaction.js";
 import { HttpError } from "../middleware/errorHandler.js";
+import { lockLoginEmail, patientLoginUsesEmail } from "./loginEmails.js";
 
 // required text with readable error messages
 const text = (label: string, max: number) =>
@@ -38,7 +39,8 @@ export const employeeSchema = z.object({
   firstName: text("First name", 50),
   lastName: text("Last name", 50),
   dob: date("Date of birth").refine((d) => d < new Date().toISOString().slice(0, 10), "Date of birth must be in the past"),
-  email: z.email("Enter a valid email").trim().toLowerCase().max(100, "Email must be 100 characters or less"),
+  // trimmed before the check, the same as patient emails
+  email: z.string("Enter a valid email").trim().toLowerCase().pipe(z.email("Enter a valid email").max(100, "Email must be 100 characters or less")),
   phone: z.string("Phone is required").trim().regex(/^\d{10}$/, "Phone must be exactly 10 digits"),
   employeeTypeId: z.number("Select a role").int().positive(),
   officeId: z.number("Select an office").int().positive(),
@@ -202,11 +204,6 @@ async function getRoleKind(client: PoolClient, employeeTypeId: number, currentTy
   return name === "doctor" || name === "nurse" ? name : "other";
 }
 
-// the email column isn't unique, so two saves of the same email wait for each other here
-async function lockEmail(client: PoolClient, email: string) {
-  await client.query(`SELECT pg_advisory_xact_lock(hashtext('employee email'), hashtext($1))`, [email]);
-}
-
 // checks for the fields that were sent, so a partial update only checks what it changes
 async function validateEmployee(client: PoolClient, employeeId: number | null, input: Partial<EmployeeInput>, kind: RoleKind, currentOfficeId: number | null) {
   const creating = employeeId === null;
@@ -224,6 +221,8 @@ async function validateEmployee(client: PoolClient, employeeId: number | null, i
   if (input.email !== undefined) {
     const email = await client.query(`SELECT 1 FROM employee WHERE LOWER(email) = $1 AND employee_id <> $2`, [input.email, otherId]);
     if (email.rowCount) throw new HttpError(409, "Another employee already uses that email");
+    // employees sign in with this email, so it can't belong to a patient login either
+    if (await patientLoginUsesEmail(client, input.email, otherId)) throw new HttpError(409, "A patient login already uses that email");
   }
 
   if (input.doctor) {
@@ -316,7 +315,8 @@ export async function createEmployee(input: NewEmployee) {
   const passwordHash = input.login ? await hashPassword(input.login.password) : null;
 
   const employeeId = await inTransaction(async (client) => {
-    await lockEmail(client, input.email);
+    // the email column isn't unique, so two saves of the same email wait for each other here
+    await lockLoginEmail(client, input.email);
     const kind = await getRoleKind(client, input.employeeTypeId, null);
     await validateEmployee(client, null, input, kind, null);
     if (input.login) await checkUsername(client, input.login.username);
@@ -345,7 +345,7 @@ export async function createEmployee(input: NewEmployee) {
 // only the fields that were sent change, and login and active status are managed separately
 export async function updateEmployee(employeeId: number, changes: Partial<EmployeeInput>) {
   await inTransaction(async (client) => {
-    if (changes.email !== undefined) await lockEmail(client, changes.email);
+    if (changes.email !== undefined) await lockLoginEmail(client, changes.email);
     // booking locks this row too, so a booking in progress finishes before a specialty is removed
     const current = await client.query(
       `
@@ -455,6 +455,31 @@ export async function setEmployeeStatus(employeeId: number, isActive: boolean, a
       const { count } = upcoming.rows[0];
       if (count) {
         throw new HttpError(409, `${count} upcoming appointment${count === 1 ? " is" : "s are"} booked with this doctor. Reschedule or cancel ${count === 1 ? "it" : "them"} first.`);
+      }
+
+      // active patients would be left with a primary doctor who is unable to sign in and approve their referrals
+      const duties = await client.query(
+        `
+        SELECT
+          (SELECT count(*)::int FROM patient_doctor pd JOIN patient p ON p.patient_id = pd.patient_id
+           WHERE pd.doctor_id = $1 AND pd.is_primary AND pd.is_active AND p.is_active) AS "primaryPatients",
+          (SELECT count(*)::int FROM referral
+           WHERE primary_doctor_id = $1 AND status = 'Pending' AND expiration_date >= ${CLINIC_TODAY}) AS "pendingReferrals"
+        `,
+        [employeeId]
+      );
+      const { primaryPatients, pendingReferrals } = duties.rows[0];
+      if (primaryPatients) {
+        throw new HttpError(
+          409,
+          `This doctor is the primary doctor for ${primaryPatients} active patient${primaryPatients === 1 ? "" : "s"}. Choose a new primary doctor for ${primaryPatients === 1 ? "that patient" : "them"} first.`
+        );
+      }
+      if (pendingReferrals) {
+        throw new HttpError(
+          409,
+          `${pendingReferrals} referral${pendingReferrals === 1 ? " is" : "s are"} waiting for this doctor to approve or deny. They have to be decided first.`
+        );
       }
     }
     if (isActive && !officeActive) throw new HttpError(409, "Move this employee to an active office before reactivating them");
