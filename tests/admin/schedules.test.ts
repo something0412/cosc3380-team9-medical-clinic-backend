@@ -198,7 +198,7 @@ describe("doctor schedules", () => {
     }
 
     // an active specialty the doctor doesn't practice
-    const other = await admin.post("/api/admin/specialties", { name: "Dermatology", requiresReferral: true });
+    const other = await admin.post("/api/admin/specialties", { name: "Dermatology", requiresReferral: true, visitPrice: "150.00" });
     const notPracticed = await admin.post("/api/admin/schedules", { ...friday, specialtyId: other.body.specialtyId });
     assert.equal(notPracticed.status, 409);
     assert.match(notPracticed.body.error, /isn't assigned to that specialty/);

@@ -539,21 +539,28 @@ CREATE FUNCTION public.lab_order_billing() RETURNS trigger
     SET search_path TO ''
     AS $$
 DECLARE
-    open_invoice integer;
+    visit_invoice integer;
+    old_reason text := current_setting('app.reason', true);
 BEGIN
     IF NEW.appointment_id IS NULL THEN
         RETURN NULL;
     END IF;
 
     IF TG_OP = 'INSERT' AND NEW.status <> 'Cancelled' THEN
-        open_invoice := public.billable_visit_invoice(NEW.appointment_id);
-        IF open_invoice IS NOT NULL THEN
-            PERFORM public.add_lab_order_line(open_invoice, NEW.lab_order_id);
+        -- any invoice for the visit that isn't void, paid or not
+        SELECT invoice_id INTO visit_invoice FROM public.invoice
+        WHERE appointment_id = NEW.appointment_id AND status <> 'Void'
+        LIMIT 1;
+        IF visit_invoice IS NOT NULL THEN
+            -- if the new line reopens a paid invoice, the history says why
+            PERFORM set_config('app.reason', 'Follow-up lab test added', true);
+            PERFORM public.add_lab_order_line(visit_invoice, NEW.lab_order_id);
+            PERFORM set_config('app.reason', COALESCE(old_reason, ''), true);
         END IF;
     ELSIF TG_OP = 'UPDATE' AND NEW.status = 'Cancelled' AND OLD.status <> 'Cancelled' THEN
-        open_invoice := public.unpaid_visit_invoice(NEW.appointment_id);
-        IF open_invoice IS NOT NULL THEN
-            DELETE FROM public.invoice_item WHERE invoice_id = open_invoice AND lab_order_id = NEW.lab_order_id;
+        visit_invoice := public.unpaid_visit_invoice(NEW.appointment_id);
+        IF visit_invoice IS NOT NULL THEN
+            DELETE FROM public.invoice_item WHERE invoice_id = visit_invoice AND lab_order_id = NEW.lab_order_id;
         END IF;
     END IF;
     RETURN NULL;
@@ -2707,6 +2714,13 @@ CREATE INDEX idx_nursing_note_appointment ON public.nursing_note USING btree (ap
 --
 
 CREATE INDEX idx_patient_vitals_patient_recorded ON public.patient_vitals USING btree (patient_id, recorded_at DESC);
+
+
+--
+-- Name: patient_vitals_one_per_visit; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX patient_vitals_one_per_visit ON public.patient_vitals USING btree (appointment_id) WHERE (appointment_id IS NOT NULL);
 
 
 --

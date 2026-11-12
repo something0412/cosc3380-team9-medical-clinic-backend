@@ -16,7 +16,7 @@ before(async () => {
 after(() => app.close());
 
 async function createSpecialty(name: string, requiresReferral = false) {
-  const res = await admin.post("/api/admin/specialties", { name, requiresReferral });
+  const res = await admin.post("/api/admin/specialties", { name, requiresReferral, visitPrice: "150.00" });
   assert.equal(res.status, 201, JSON.stringify(res.body));
   return res.body;
 }
@@ -72,16 +72,23 @@ describe("creating and editing specialties", () => {
     assert.equal(created.requiresReferral, true);
     assert.equal(created.doctorCount, 0);
     assert.equal(await relatedSnapshot(), before);
+
+    // the visit price is saved with it, so its visits are billed right away
+    const fee = await app.db.query(`SELECT category, name, price::text, is_active FROM service_fee WHERE specialty_id = $1`, [created.specialtyId]);
+    assert.deepEqual(fee.rows, [{ category: "Visit", name: "Neurology visit", price: "150.00", is_active: true }]);
   });
 
-  test("blank, long, non-boolean, and duplicate names are rejected", async () => {
+  test("blank, long, non-boolean, and duplicate names and missing visit prices are rejected", async () => {
+    const price = { visitPrice: "150.00" };
     const cases: [string, object, number][] = [
-      ["blank name", { name: "   ", requiresReferral: false }, 400],
-      ["name too long", { name: "x".repeat(101), requiresReferral: false }, 400],
-      ["non-boolean referral", { name: "Dermatology", requiresReferral: "yes" }, 400],
-      ["missing referral", { name: "Dermatology" }, 400],
-      ["duplicate name", { name: "Cardiology", requiresReferral: true }, 409],
-      ["duplicate name in another case", { name: "cardiology", requiresReferral: true }, 409],
+      ["blank name", { name: "   ", requiresReferral: false, ...price }, 400],
+      ["name too long", { name: "x".repeat(101), requiresReferral: false, ...price }, 400],
+      ["non-boolean referral", { name: "Dermatology", requiresReferral: "yes", ...price }, 400],
+      ["missing referral", { name: "Dermatology", ...price }, 400],
+      ["missing visit price", { name: "Dermatology", requiresReferral: false }, 400],
+      ["zero visit price", { name: "Dermatology", requiresReferral: false, visitPrice: "0" }, 400],
+      ["duplicate name", { name: "Cardiology", requiresReferral: true, ...price }, 409],
+      ["duplicate name in another case", { name: "cardiology", requiresReferral: true, ...price }, 409],
     ];
     for (const [label, body, status] of cases) {
       assert.equal((await admin.post("/api/admin/specialties", body)).status, status, label);

@@ -232,6 +232,36 @@ describe("invoices made at check out", () => {
     assert.deepEqual([invoice.amount, invoice.balance], ["215.15", "215.15"]);
   });
 
+  test("a follow-up lab test on a paid visit reopens its invoice for the new balance, and cancelling it closes it again", async () => {
+    const invoiceId = await invoiceFor("150.00");
+    assert.equal((await pay(invoiceId, "150.00")).status, 201);
+    assert.equal((await invoiceRow(invoiceId)).status, "Paid");
+
+    const appointmentId = (await app.db.query(`SELECT appointment_id FROM invoice WHERE invoice_id = $1`, [invoiceId])).rows[0].appointment_id;
+    const test = (await app.db.query(`INSERT INTO lab_test_type (name, cost) VALUES ('Hemoglobin A1c', 40) RETURNING lab_test_type_id AS id`)).rows[0].id;
+    await app.db.query(`INSERT INTO service_fee (category, type, name, price, lab_test_type_id) VALUES ('Lab Test', 'Blood Test', 'Hemoglobin A1c', 40.00, $1)`, [test]);
+
+    // the doctor orders it from the visit after the results came back
+    const doctor = await app.loginStaff(ids.doctor);
+    const ordered = await doctor.post("/api/doctor/lab-orders", { patientId: ids.patient, labTestTypeId: test, appointmentId });
+    assert.equal(ordered.status, 201, JSON.stringify(ordered.body));
+
+    const reopened = (await admin.get(`/api/admin/invoices/${invoiceId}`)).body;
+    assert.deepEqual([reopened.status, reopened.amount, reopened.paid, reopened.balance], ["Pending", "190.00", "150.00", "40.00"]);
+    assert.deepEqual(reopened.items.at(-1), { ...reopened.items.at(-1), category: "Lab Test", description: "Hemoglobin A1c", price: "40.00" });
+    const history = await app.db.query(`SELECT old_status, new_status, reason FROM billing_history WHERE invoice_id = $1 AND payment_id IS NULL ORDER BY history_id DESC LIMIT 1`, [invoiceId]);
+    assert.deepEqual(history.rows[0], { old_status: "Paid", new_status: "Pending", reason: "Follow-up lab test added" });
+
+    // the patient sees what's owed now
+    const patientView = (await pat.get(`/api/patient/${ids.patient}/billing`)).body.invoices.find((i: { invoiceId: number }) => i.invoiceId === invoiceId);
+    assert.deepEqual([patientView.status, patientView.balance], ["Pending", "40.00"]);
+
+    // cancelling the test before the lab starts takes the line off, and the invoice is paid again
+    assert.equal((await doctor.patch(`/api/doctor/lab-orders/${ordered.body.labOrderId}/cancel`)).status, 200);
+    const closed = (await admin.get(`/api/admin/invoices/${invoiceId}`)).body;
+    assert.deepEqual([closed.status, closed.amount, closed.balance], ["Paid", "150.00", "0.00"]);
+  });
+
   test("only checking out bills a visit, and only once", async () => {
     for (const status of ["Cancelled", "No Show"]) {
       const appointmentId = await visit("Scheduled");

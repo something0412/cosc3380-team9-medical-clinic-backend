@@ -16,10 +16,11 @@ const listQuery = z.object({
   status: z.enum(["all", "open", "Ordered", "InProgress", "Completed", "Cancelled"], "Status must be all, open, Ordered, InProgress, Completed or Cancelled").default("all"),
   search: z.string().trim().max(100).default(""),
 });
+// every lab order belongs to a visit, including follow-up orders after the visit
 const orderBody = z.object({
   patientId: id("a patient"),
   labTestTypeId: id("a lab test"),
-  appointmentId: id("an appointment").nullish(),
+  appointmentId: id("an appointment"),
 });
 
 function me(req: Request) {
@@ -78,28 +79,27 @@ doctorLabOrdersRouter.post("/api/doctor/lab-orders", async (req, res) => {
   const { patientId, labTestTypeId, appointmentId } = orderBody.parse(req.body);
 
   const order = await withTransaction(async (client) => {
-    // a test for an already billed visit is added to its invoice, so the billing trigger needs to know who did it
+    // a test for an already billed visit is added to its invoice (reopening it if paid), so the billing trigger needs to know who did it
     await setBillingEmployee(client, doctorId);
     // orders for one patient go one at a time, so the same test can't be ordered twice by accident
     await lockPatientInCare(client, asClinician(req.user, "doctor"), patientId);
 
-    if (appointmentId) {
-      const visit = await client.query(`SELECT patient_id AS "patientId", doctor_id AS "doctorId", status FROM appointment WHERE appointment_id = $1 FOR SHARE`, [
-        appointmentId,
-      ]);
-      const row = visit.rows[0];
-      if (!row || row.doctorId !== doctorId || row.patientId !== patientId) throw new HttpError(404, "Appointment not found");
-      if (row.status === "Cancelled" || row.status === "No Show") throw new HttpError(409, `Lab orders can't be added to a visit that is ${row.status}`);
-    }
+    // the visit has to be mine, for this patient, and not cancelled or missed
+    const visit = await client.query(`SELECT patient_id AS "patientId", doctor_id AS "doctorId", status FROM appointment WHERE appointment_id = $1 FOR SHARE`, [
+      appointmentId,
+    ]);
+    const row = visit.rows[0];
+    if (!row || row.doctorId !== doctorId || row.patientId !== patientId) throw new HttpError(404, "Appointment not found");
+    if (row.status === "Cancelled" || row.status === "No Show") throw new HttpError(409, `Lab orders can't be added to a visit that is ${row.status}`);
 
     const test = await client.query(`SELECT 1 FROM lab_test_type WHERE lab_test_type_id = $1 AND is_active`, [labTestTypeId]);
     if (!test.rowCount) throw new HttpError(400, "Choose an active lab test");
 
     const open = await client.query(
-      `SELECT 1 FROM lab_order WHERE patient_id = $1 AND lab_test_type_id = $2 AND status IN ('Ordered', 'InProgress') AND appointment_id IS NOT DISTINCT FROM $3::int`,
-      [patientId, labTestTypeId, appointmentId ?? null]
+      `SELECT 1 FROM lab_order WHERE patient_id = $1 AND lab_test_type_id = $2 AND status IN ('Ordered', 'InProgress') AND appointment_id = $3`,
+      [patientId, labTestTypeId, appointmentId]
     );
-    if (open.rowCount) throw new HttpError(409, "This test is already ordered for the patient and doesn't have a result yet");
+    if (open.rowCount) throw new HttpError(409, "This test is already ordered for this visit and doesn't have a result yet");
 
     const created = await client.query(
       `
@@ -107,7 +107,7 @@ doctorLabOrdersRouter.post("/api/doctor/lab-orders", async (req, res) => {
       VALUES ($1, $2, $3, $4, 'Ordered', ${CLINIC_TODAY})
       RETURNING lab_order_id
       `,
-      [patientId, doctorId, labTestTypeId, appointmentId ?? null]
+      [patientId, doctorId, labTestTypeId, appointmentId]
     );
     return getLabOrder(created.rows[0].lab_order_id, client);
   });

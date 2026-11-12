@@ -31,7 +31,7 @@ function newOffice(name: string) {
 }
 
 function newSpecialty(name: string, requiresReferral = false) {
-  return created(admin.post("/api/admin/specialties", { name, requiresReferral }));
+  return created(admin.post("/api/admin/specialties", { name, requiresReferral, visitPrice: "150.00" }));
 }
 
 function newShift(name: string, startTime: string, endTime: string) {

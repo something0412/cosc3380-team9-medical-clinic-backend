@@ -204,49 +204,64 @@ describe("patient records", () => {
   const visitsOf = async (client: TestClient, patientId: number) => {
     const res = await client.get(`/api/patient/${patientId}/records`);
     assert.equal(res.status, 200, JSON.stringify(res.body));
-    return res.body.visits as { appointmentId: number; visitDate: string; diagnosis: string | null; visitReason: string; notes: string }[];
+    return res.body.visits as { appointmentId: number; visitDate: string; startTime: string; doctorName: string; specialty: string; officeName: string }[];
   };
 
-  test("a visit with no diagnosis returns null and still shows its visit reason", async () => {
-    const none = (await visitsOf(olive, OLIVE)).find((v) => v.appointmentId === visit.none);
-    assert.deepEqual(Object.keys(none ?? {}).sort(), ["appointmentId", "diagnosis", "notes", "visitDate", "visitReason"]);
-    assert.equal(none?.diagnosis, null);
-    assert.equal(none?.visitReason, "Annual checkup");
-    assert.equal(none?.notes, "All normal");
-    assert.equal(typeof none?.visitDate, "string");
-  });
-
-  test("one or several diagnoses are combined in recorded order, with one row per visit", async () => {
-    const res = await olive.get(`/api/patient/${OLIVE}/records`);
-    assert.ok(Array.isArray(res.body.prescriptions) && Array.isArray(res.body.labResults));
-    // newest visit first, and the visit without a summary isn't listed
+  test("every completed visit is listed newest first, with when, who and where", async () => {
+    const visits = await visitsOf(olive, OLIVE);
+    // a visit without a written summary is still a visit
     assert.deepEqual(
-      res.body.visits.map((v: { appointmentId: number; diagnosis: string | null; visitReason: string }) => [v.appointmentId, v.diagnosis, v.visitReason]),
+      visits.map((v) => [v.appointmentId, v.visitDate, v.startTime]),
       [
-        [visit.several, "Hypertension, Type 2 diabetes", "Follow up on blood pressure"],
-        [visit.one, "Seasonal allergies", "Sneezing and itchy eyes"],
-        [visit.none, null, "Annual checkup"],
+        [visit.noSummary, "2026-04-05", "08:00"],
+        [visit.several, "2026-03-05", "08:00"],
+        [visit.one, "2026-02-05", "08:00"],
+        [visit.none, "2026-01-05", "08:00"],
       ]
     );
+    assert.deepEqual(Object.keys(visits[0]).sort(), ["appointmentId", "doctorName", "officeName", "specialty", "startTime", "visitDate"]);
   });
 
-  test("prescriptions and lab results keep their format alongside visits", async () => {
+  test("a visit's details have its summary, diagnoses in recorded order and its lab tests", async () => {
+    const several = await olive.get(`/api/patient/${OLIVE}/visits/${visit.several}`);
+    assert.equal(several.status, 200, JSON.stringify(several.body));
+    assert.equal(several.body.summary.visitReason, "Follow up on blood pressure");
+    assert.deepEqual(several.body.diagnoses.map((d: { name: string }) => d.name), ["Hypertension", "Type 2 diabetes"]);
+    assert.deepEqual(several.body.labOrders, []);
+
+    const none = (await olive.get(`/api/patient/${OLIVE}/visits/${visit.none}`)).body;
+    assert.deepEqual([none.summary.visitReason, none.diagnoses], ["Annual checkup", []]);
+
+    const one = (await olive.get(`/api/patient/${OLIVE}/visits/${visit.one}`)).body;
+    assert.deepEqual(
+      one.labOrders.map((l: { testName: string; status: string; resultNotes: string }) => [l.testName, l.status, l.resultNotes]),
+      [["Allergy panel", "Completed", "Pollen allergy"]]
+    );
+    // nursing notes stay with the care team
+    assert.equal("nursingNotes" in one, false);
+  });
+
+  test("prescriptions and lab results show which visit they came from", async () => {
     const res = await olive.get(`/api/patient/${OLIVE}/records`);
     assert.deepEqual(Object.keys(res.body).sort(), ["labResults", "prescriptions", "visits"]);
     assert.deepEqual(res.body.prescriptions, [
-      { prescriptionItemId: 1, medicationName: "Loratadine", dosage: "10 mg", instructions: "Once a day", isActive: true },
+      { prescriptionItemId: 1, medicationName: "Loratadine", dosage: "10 mg", instructions: "Once a day", isActive: true, visitDate: "2026-02-05" },
     ]);
     assert.equal(res.body.labResults.length, 1);
-    assert.deepEqual(Object.keys(res.body.labResults[0]).sort(), ["labOrderId", "orderDate", "resultNotes", "testName"]);
-    assert.equal(res.body.labResults[0].testName, "Allergy panel");
-    assert.equal(res.body.labResults[0].resultNotes, "Pollen allergy");
+    assert.deepEqual(Object.keys(res.body.labResults[0]).sort(), ["labOrderId", "orderDate", "resultNotes", "status", "testName", "visitDate"]);
+    assert.deepEqual(
+      [res.body.labResults[0].testName, res.body.labResults[0].status, res.body.labResults[0].resultNotes, res.body.labResults[0].visitDate],
+      ["Allergy panel", "Completed", "Pollen allergy", "2026-02-05"]
+    );
   });
 
   test("patients only see their own records", async () => {
     const own = await pat.get(`/api/patient/${ids.patient}/records`);
     assert.deepEqual([own.body.prescriptions, own.body.labResults], [[], []]);
-    assert.deepEqual((await visitsOf(pat, ids.patient)).map((v) => [v.appointmentId, v.diagnosis]), [[visit.pats, "Migraine"]]);
+    assert.deepEqual((await visitsOf(pat, ids.patient)).map((v) => v.appointmentId), [visit.pats]);
     assert.equal((await pat.get(`/api/patient/${OLIVE}/records`)).status, 403);
+    assert.equal((await pat.get(`/api/patient/${OLIVE}/visits/${visit.one}`)).status, 403);
+    assert.equal((await pat.get(`/api/patient/${ids.patient}/visits/${visit.one}`)).status, 404);
     assert.equal((await anonymous.get(`/api/patient/${OLIVE}/records`)).status, 401);
   });
 });
