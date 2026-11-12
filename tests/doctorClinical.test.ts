@@ -19,7 +19,7 @@ import { startTestApp } from "./helpers/testApp.js";
 import type { TestClient, TestResponse } from "./helpers/testApp.js";
 import { ids, resetDatabase } from "./helpers/testDb.js";
 
-const PATIENT_LIST_KEYS = ["patientId", "firstName", "lastName", "dob", "assignedToMe", "lastVisit", "nextVisit"];
+const PATIENT_LIST_KEYS = ["patientId", "firstName", "lastName", "dob", "assignedToMe", "canRefer", "lastVisit", "nextVisit"];
 const CHART_KEYS = [
   "patientId", "firstName", "lastName", "dob", "gender", "phone", "isActive", "assignedToMe",
   "allergies", "insurance", "missingForms", "homeMedications", "vitals", "nursingNotes", "visits", "labOrders", "prescriptions",
