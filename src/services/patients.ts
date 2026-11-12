@@ -5,6 +5,7 @@ import { pool } from "../lib/db.js";
 import { hashPassword } from "../lib/password.js";
 import { withTransaction } from "../lib/transaction.js";
 import { HttpError } from "../middleware/errorHandler.js";
+import { employeeUsesEmail, lockLoginEmail } from "./loginEmails.js";
 
 const required = (label: string, max: number) =>
   z.string(`${label} is required`).trim().min(1, `${label} is required`).max(max, `${label} must be ${max} characters or less`);
@@ -18,7 +19,12 @@ const optionalText = (label: string, max: number) =>
     .transform((value) => value ?? null);
 
 // patient_creds.username holds the login email and only fits 50 characters
-const loginEmail = z.email("Enter a valid email address").trim().toLowerCase().max(50, "Email must be 50 characters or less");
+// it's trimmed and lowercased before the check, so extra spaces or capital letters don't make a new email
+const loginEmail = z
+  .string("Enter a valid email address")
+  .trim()
+  .toLowerCase()
+  .pipe(z.email("Enter a valid email address").max(50, "Email must be 50 characters or less"));
 
 const contactEmail = z
   .preprocess(blankToNull, z.email("Enter a valid email address").toLowerCase().max(100, "Email must be 100 characters or less").nullish())
@@ -140,11 +146,6 @@ async function lockIdentity(client: PoolClient, patient: PatientInput) {
   ]);
 }
 
-// the same for two logins being set up with one email
-async function lockLoginEmail(client: PoolClient, email: string) {
-  await client.query(`SELECT pg_advisory_xact_lock(hashtext('patient login'), hashtext($1))`, [email]);
-}
-
 // locks the patient so their contact changes happen one at a time
 async function lockPatient(client: PoolClient, patientId: number) {
   const result = await client.query(`SELECT is_active AS "isActive" FROM patient WHERE patient_id = $1 FOR NO KEY UPDATE`, [patientId]);
@@ -195,7 +196,8 @@ export async function signUpPatient(input: z.infer<typeof signupSchema>) {
     return await withTransaction(async (client) => {
       await lockIdentity(client, input);
       await lockLoginEmail(client, input.email);
-      if ((await loginEmailTaken(client, input.email)) || (await findMatches(client, input)).length) {
+      // an employee's email gets the same answer, so sign up can't show who works here
+      if ((await loginEmailTaken(client, input.email)) || (await employeeUsesEmail(client, input.email)) || (await findMatches(client, input)).length) {
         throw new HttpError(409, SIGNUP_CONFLICT);
       }
 
@@ -235,7 +237,9 @@ export async function createPortalLogin(patientId: number, login: z.infer<typeof
 
       const existing = await client.query(`SELECT 1 FROM patient_creds WHERE patient_id = $1`, [patientId]);
       if (existing.rowCount) throw new HttpError(409, HAS_LOGIN);
-      if (await loginEmailTaken(client, login.email, patientId)) throw new HttpError(409, EMAIL_TAKEN);
+      if ((await loginEmailTaken(client, login.email, patientId)) || (await employeeUsesEmail(client, login.email, patientId))) {
+        throw new HttpError(409, EMAIL_TAKEN);
+      }
 
       await client.query(`INSERT INTO patient_creds (patient_id, username, password_hash) VALUES ($1, $2, $3)`, [
         patientId,
@@ -293,7 +297,9 @@ export async function updateContactInfo(patientId: number, info: ContactInfo & {
     return await withTransaction(async (client) => {
       if (info.email) {
         await lockLoginEmail(client, info.email);
-        if (await loginEmailTaken(client, info.email, patientId)) throw new HttpError(409, EMAIL_TAKEN);
+        if ((await loginEmailTaken(client, info.email, patientId)) || (await employeeUsesEmail(client, info.email, patientId))) {
+          throw new HttpError(409, EMAIL_TAKEN);
+        }
       }
 
       const updated = await client.query(

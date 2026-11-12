@@ -18,6 +18,10 @@ const quantity = z.coerce
   .positive("Quantity must be a whole number more than 0")
   .max(2147483647, "Quantity is too large");
 
+// one order is at most 10,000 of a supply, stock itself has no limit
+const MAX_ORDER_QUANTITY = 10000;
+const orderQuantity = quantity.max(MAX_ORDER_QUANTITY, "You can order up to 10,000 at a time");
+
 // the nurse and office come from the database on every request, never from the client
 function me(req: Request) {
   if (!req.user || req.user.role === "patient") throw new HttpError(401, "Login required");
@@ -35,7 +39,7 @@ const STOCK_COLUMNS = `
   to_char(os.expiration_date, 'YYYY-MM-DD') AS "expirationDate",
   os.quantity_on_hand <= os.reorder_threshold AS "lowStock",
   COALESCE(os.expiration_date <= ${CLINIC_TODAY} + 30, false) AS "expiringSoon",
-  (SELECT COALESCE(sum(so.quantity_ordered), 0)::int FROM supply_order so
+  (SELECT LEAST(COALESCE(sum(so.quantity_ordered), 0), 2147483647)::int FROM supply_order so
    WHERE so.supply_id = os.supply_id AND so.office_id = os.office_id AND so.status IN ('Pending', 'Ordered')) AS "onOrder"
 `;
 
@@ -162,7 +166,7 @@ nurseSuppliesRouter.get("/api/nurse/supply-orders", async (req, res) => {
 // order more of a supply
 nurseSuppliesRouter.post("/api/nurse/supply-orders", async (req, res) => {
   const { nurseId } = me(req);
-  const body = z.object({ supplyId: idParam("a supply"), quantity }).parse(req.body);
+  const body = z.object({ supplyId: idParam("a supply"), quantity: orderQuantity }).parse(req.body);
 
   const order = await withTransaction(async (client) => {
     const officeId = await lockActiveEmployee(client, nurseId);
@@ -210,10 +214,13 @@ nurseSuppliesRouter.patch("/api/nurse/supply-orders/:id/receive", async (req, re
       INSERT INTO office_supply (supply_id, office_id, quantity_on_hand)
       VALUES ($1, $2, $3)
       ON CONFLICT (supply_id, office_id) DO UPDATE SET quantity_on_hand = office_supply.quantity_on_hand + EXCLUDED.quantity_on_hand, is_active = true
+      WHERE office_supply.quantity_on_hand::bigint + EXCLUDED.quantity_on_hand <= 2147483647
       RETURNING office_supply_id
       `,
       [supply_id, office_id, quantity_ordered]
     );
+    // the stock column has no room for more, so the order stays open
+    if (!stock.rowCount) throw new HttpError(409, "This order is too large to add to your office stock. Cancel it and order a smaller amount.");
 
     return { ...(await getOrder(client, supplyOrderId)), stock: await getStock(client, stock.rows[0].office_supply_id) };
   });

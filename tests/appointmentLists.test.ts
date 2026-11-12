@@ -185,7 +185,7 @@ describe("patient name search", () => {
     const visit = async (firstName: string, lastName: string, timeSlotId: number) =>
       addAppointment(app.db, { patientId: await addPatient(app.db, firstName, lastName), doctorId: doraId, officeId: ids.westsideOffice, date, timeSlotId });
     const underscore = await visit("Jo_e", "Under", slots.early);
-    const joke = await visit("Joke", "Plain", slots.morning);
+    const joke = await visit("Joke", "Back\\slash", slots.morning);
     const percent = await visit("Max%", "Percent", slots.noon);
     const maxi = await visit("Maxi", "Plain", slots.late);
 
@@ -194,9 +194,11 @@ describe("patient name search", () => {
       ["o_e", [underscore]],
       ["%", [percent]],
       ["x%", [percent]],
-      ["\\", []],
+      ["\\", [joke]],
+      ["k\\s", [joke]],
       ["joke", [joke]],
-      ["PLAIN", [joke, maxi]],
+      ["MAX", [percent, maxi]],
+      ["", [underscore, joke, percent, maxi]],
     ];
     for (const [search, expected] of searches) {
       const query = `date=${date}&search=${encodeURIComponent(search)}`;

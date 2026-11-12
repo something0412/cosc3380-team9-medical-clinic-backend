@@ -244,6 +244,33 @@ describe("creating referrals", () => {
     assert.deepEqual([missing.status, missing.body], [404, { error: "Patient not found" }]);
   });
 
+  test("a patient with no primary doctor is checked for care and status before the primary doctor rule", async () => {
+    const patientId = await addPatient(app.db, "Nora", "Noprimary");
+    const referrals = async () => (await app.db.query(`SELECT count(*)::int AS n FROM referral WHERE patient_id = $1`, [patientId])).rows[0].n;
+
+    // an unrelated doctor is not told whether the patient has a primary doctor
+    const unrelated = await refer(una, toCardiology(patientId));
+    assert.deepEqual([unrelated.status, unrelated.body], [403, { error: "This patient isn't under your care" }]);
+
+    // a doctor who saw them is still refused once the account is inactive
+    await addAppointment(app.db, { patientId, doctorId: seenId, officeId: ids.mainOffice, date: dayFrom(today, -4), timeSlotId: slots[0], status: "Completed" });
+    await app.db.query(`UPDATE patient SET is_active = false WHERE patient_id = $1`, [patientId]);
+    const inactive = await refer(seen, toCardiology(patientId));
+    assert.deepEqual([inactive.status, inactive.body.error], [409, "This patient account is inactive"]);
+
+    // once active again, the missing primary doctor is what stops it
+    await app.db.query(`UPDATE patient SET is_active = true WHERE patient_id = $1`, [patientId]);
+    const noPrimary = await refer(seen, toCardiology(patientId));
+    assert.deepEqual(
+      [noPrimary.status, noPrimary.body.error],
+      [409, "This patient doesn't have a primary doctor yet. Their first Family Medicine or Internal Medicine visit sets one."]
+    );
+
+    assert.equal(await referrals(), 0);
+    const primary = await app.db.query(`SELECT count(*)::int AS n FROM patient_doctor WHERE patient_id = $1`, [patientId]);
+    assert.equal(primary.rows[0].n, 0);
+  });
+
   test("the specialist has to be someone else who actively practices the specialty", async () => {
     const patientId = await rayPatient();
     const cases: [object, string][] = [

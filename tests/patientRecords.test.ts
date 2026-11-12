@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
-import { asEmployee } from "./helpers/appointmentData.js";
+import { addDoctor, asEmployee } from "./helpers/appointmentData.js";
 import { failWrites, slowWrites } from "./helpers/dbFaults.js";
 import { startTestApp } from "./helpers/testApp.js";
 import type { TestClient } from "./helpers/testApp.js";
@@ -372,5 +372,50 @@ describe("privacy", () => {
     assert.equal(profile.body.patientId, OLIVE);
     assert.doesNotMatch(JSON.stringify(profile.body), /password|username/i);
     assert.equal((await olive.get(`/api/patient/${ids.patient}/profile`)).status, 403);
+  });
+});
+
+describe("admin patient edit", () => {
+  test("an admin sets, keeps and removes a primary doctor and resets a password", async () => {
+    const { rows } = await app.db.query(
+      `INSERT INTO patient (first_name, last_name, dob, phone, email) VALUES ('Eddie', 'Edit', '1988-08-08', '7135554400', 'eddie@test.org') RETURNING patient_id`
+    );
+    const patientId = rows[0].patient_id as number;
+    await app.db.query(`INSERT INTO patient_creds (patient_id, username, password_hash) SELECT $1, 'eddie@test.org', password_hash FROM patient_creds WHERE patient_id = 1`, [
+      patientId,
+    ]);
+    const firstDoctor = await addDoctor(app.db, "Prim", ids.mainOffice);
+    const secondDoctor = await addDoctor(app.db, "Next", ids.mainOffice);
+    const edit = (body: object, id = patientId) => admin.put(`/api/admin/patients/${id}`, body);
+    const assignments = async () =>
+      (await app.db.query(`SELECT doctor_id, is_primary, is_active FROM patient_doctor WHERE patient_id = $1 ORDER BY doctor_id`, [patientId])).rows;
+    const canLogIn = async (password: string) =>
+      (await app.client().post("/api/auth/patient/login", { patientId, email: "eddie@test.org", password })).status === 200;
+
+    // a missing patient is a 404 and nothing is saved
+    assert.deepEqual([(await edit({ doctorId: firstDoctor }, 99999)).status, (await edit({ doctorId: null }, 99999)).body], [404, { error: "Patient not found" }]);
+    assert.equal((await app.db.query(`SELECT count(*)::int AS n FROM patient_doctor WHERE patient_id = 99999`)).rows[0].n, 0);
+
+    assert.equal((await edit({ doctorId: firstDoctor })).status, 204);
+    assert.equal((await admin.get(`/api/admin/patients/${patientId}`)).body.primaryDoctorId, firstDoctor);
+    assert.deepEqual((await edit({ doctorId: ids.nurse })).body, { error: "Choose an active doctor" });
+
+    // the current primary doctor leaves, and the admin can still reset the password without picking a new one
+    await app.db.query(`UPDATE employee SET is_active = false WHERE employee_id = $1`, [firstDoctor]);
+    assert.equal((await edit({ doctorId: firstDoctor, newPassword: "Reset-Pass-42" })).status, 204);
+    assert.ok(await canLogIn("Reset-Pass-42"));
+    assert.equal(await canLogIn(TEST_PASSWORD), false);
+    assert.deepEqual(await assignments(), [{ doctor_id: firstDoctor, is_primary: true, is_active: true }]);
+
+    // an inactive doctor is refused as a new primary doctor
+    assert.equal((await edit({ doctorId: null })).status, 204);
+    assert.deepEqual((await edit({ doctorId: firstDoctor })).body, { error: "Choose an active doctor" });
+
+    // switching keeps the old doctor assigned, just not primary
+    assert.equal((await edit({ doctorId: secondDoctor })).status, 204);
+    assert.deepEqual(await assignments(), [
+      { doctor_id: firstDoctor, is_primary: false, is_active: true },
+      { doctor_id: secondDoctor, is_primary: true, is_active: true },
+    ]);
   });
 });

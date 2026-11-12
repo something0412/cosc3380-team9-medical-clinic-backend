@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../../lib/db.js";
 import { HttpError } from "../../middleware/errorHandler.js";
+import { moneySchema } from "../../services/billing.js";
 
 export const adminSpecialtiesRouter = Router();
 
@@ -12,7 +13,10 @@ const specialtySchema = z.object({
   requiresReferral: z.boolean("Requires referral must be true or false"),
 });
 
-const statusSchema = z.object({ isActive: z.boolean("Status must be true or false") });
+// adding a specialty also sets its visit price
+const createSchema = specialtySchema.extend({ visitPrice: moneySchema });
+
+const statusSchema =z.object({ isActive: z.boolean("Status must be true or false") });
 
 // one specialty with doctor and schedule counts, or null if not found
 async function loadSpecialty(specialtyId: number) {
@@ -71,21 +75,42 @@ adminSpecialtiesRouter.get("/:id", async (req, res) => {
   res.json(specialty);
 });
 
-// create a specialty, which starts out active and unassigned
+// create a specialty with its visit price, which starts out active and unassigned
 adminSpecialtiesRouter.post("/", async (req, res) => {
-  const body = specialtySchema.parse(req.body);
+  const body = createSchema.parse(req.body);
   await checkName(body.name, null);
 
-  const created = await pool
-    .query(
-      `INSERT INTO specialty (name, requires_referral) VALUES ($1, $2) RETURNING specialty_id AS "specialtyId"`,
-      [body.name, body.requiresReferral]
-    )
-    .catch((err) => {
-      throw duplicateNameError(err);
-    });
+  const client = await pool.connect();
+  let specialtyId: number;
+  try {
+    await client.query("BEGIN");
 
-  res.status(201).json(await loadSpecialty(created.rows[0].specialtyId));
+    // add the specialty
+    const created = await client
+      .query(`INSERT INTO specialty (name, requires_referral) VALUES ($1, $2) RETURNING specialty_id AS "specialtyId"`, [
+        body.name,
+        body.requiresReferral,
+      ])
+      .catch((err) => {
+        throw duplicateNameError(err);
+      });
+    specialtyId = created.rows[0].specialtyId;
+
+    // add its visit price so visits get billed right away
+    await client.query(
+      `INSERT INTO service_fee (category, name, price, specialty_id) VALUES ('Visit', $1 || ' visit', $2, $3)`,
+      [body.name, body.visitPrice, specialtyId]
+    );
+
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  res.status(201).json(await loadSpecialty(specialtyId));
 });
 
 // update the name and referral rule. This applies to future bookings and leaves existing records as is

@@ -76,4 +76,4 @@ The admin data reports (Missed Appointments, Unpaid Balances, Schedule Utilizati
 
 ## Database
 
-`database/schema.sql` is out of date: it doesn't include migrations 011 to 019, which are all applied to Supabase. Editing files in `database/` doesn't change Supabase. Read [database/README.md](database/README.md) before adding a migration.
+`database/schema.sql` matches the live Supabase database, including migrations 011 to 019. Editing files in `database/` doesn't change Supabase. Read [database/README.md](database/README.md) before adding a migration.

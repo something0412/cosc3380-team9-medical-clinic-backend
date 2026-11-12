@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { CLINIC_TIME_ZONE, CLINIC_TODAY } from "../../lib/clinicTime.js";
 import { pool } from "../../lib/db.js";
+import { HttpError } from "../../middleware/errorHandler.js";
 import { bookingDate } from "../booking.js";
 
 // mounted at /api/admin behind requireRole("admin")
@@ -180,7 +181,24 @@ adminDataReportsRouter.get("/data-reports/missed-appointments", async (req, res)
     params
   );
 
-  res.json({ summary: summary.rows[0], groups: groups.rows, missed: missed.rows });
+  // every appointment behind the counts, for the details pop-up on each group row
+  const appointments = await pool.query(
+    `${visits}
+    SELECT
+      appointment_id AS "appointmentId",
+      ${group[0]} AS "groupId",
+      to_char(appointment_date, 'YYYY-MM-DD') AS date,
+      to_char(start_time, 'HH24:MI') AS time,
+      patient_name AS "patientName",
+      doctor_name AS "doctorName",
+      office_name AS "officeName",
+      CASE WHEN late_cancel THEN 'Late Cancellation' ELSE status END AS status
+    FROM visits
+    ORDER BY appointment_date DESC, start_time DESC`,
+    params
+  );
+
+  res.json({ summary: summary.rows[0], groups: groups.rows, missed: missed.rows, appointments: appointments.rows });
 });
 
 // unpaid balances: who owes the clinic, for how long, and which payer is behind
@@ -303,7 +321,49 @@ adminDataReportsRouter.get("/data-reports/unpaid-balances", async (req, res) => 
     [...unpaidParams, q.minBalance]
   );
 
-  res.json({ summary: summary.rows[0], aging: aging.rows, payers: payers.rows, patients: patients.rows });
+  // each unpaid invoice, for the pop-up on each patient row
+  const unpaidInvoices = await pool.query(
+    `${bills}
+    SELECT
+      invoice_id AS "invoiceId",
+      patient_id AS "patientId",
+      to_char(issue_date, 'YYYY-MM-DD') AS "issueDate",
+      amount::float AS amount,
+      paid::float AS paid,
+      balance::float AS balance,
+      days_unpaid::int AS "daysUnpaid",
+      CASE WHEN paid > 0 THEN 'Partly Paid' ELSE status END AS status
+    FROM bills
+    WHERE ${unpaidWhere}
+    ORDER BY issue_date, invoice_id`,
+    unpaidParams
+  );
+
+  // invoices paid in full, newest payment first
+  const paidInvoices = await pool.query(
+    `${bills}
+    SELECT
+      invoice_id AS "invoiceId",
+      patient_id AS "patientId",
+      patient_name AS "patientName",
+      payer,
+      to_char(issue_date, 'YYYY-MM-DD') AS "issueDate",
+      amount::float AS amount,
+      to_char(last_payment, 'YYYY-MM-DD') AS "paidOn"
+    FROM bills
+    WHERE balance <= 0
+    ORDER BY last_payment DESC NULLS LAST, invoice_id DESC`,
+    params
+  );
+
+  res.json({
+    summary: summary.rows[0],
+    aging: aging.rows,
+    payers: payers.rows,
+    patients: patients.rows,
+    unpaidInvoices: unpaidInvoices.rows,
+    paidInvoices: paidInvoices.rows,
+  });
 });
 
 // schedule utilization: how full each doctor's schedule is compared to the slots it offers
@@ -374,4 +434,123 @@ adminDataReportsRouter.get("/data-reports/schedule-utilization", async (req, res
   );
 
   res.json({ summary: summary.rows[0], doctors: doctors.rows, days: days.rows });
+});
+
+// every doctor's booked appointments for the all-doctors calendar page, plus offered and booked counts per day
+adminDataReportsRouter.get("/data-reports/schedule-utilization/calendar", async (req, res) => {
+  const q = utilizationQuery.parse(req.query);
+  const params = [q.from, q.to, q.officeId ?? null, q.doctorId ?? null, q.specialtyId ?? null, q.dayOfWeek ?? null, q.shiftTypeId ?? null];
+
+  // the same slots as the report, with the appointment booked in each one
+  const slots = `
+    WITH slots AS (
+      SELECT
+        d.day::date AS day,
+        ts.start_time,
+        ts.end_time,
+        e.first_name || ' ' || e.last_name AS doctor_name,
+        o.name AS office_name,
+        sp.name AS specialty_name,
+        a.appointment_id,
+        a.status,
+        p.first_name || ' ' || p.last_name AS patient_name
+      FROM generate_series($1::date, $2::date, interval '1 day') d(day)
+      JOIN doctor_schedule ds ON ds.is_active AND ds.day_of_week = to_char(d.day, 'FMDay')
+      JOIN employee e ON e.employee_id = ds.doctor_id
+      JOIN office o ON o.office_id = ds.office_id
+      JOIN specialty sp ON sp.specialty_id = ds.specialty_id
+      JOIN time_slot ts ON ts.shift_type_id = ds.shift_type_id AND ts.is_active
+      LEFT JOIN appointment a ON a.doctor_id = ds.doctor_id AND a.appointment_date = d.day::date
+        AND a.time_slot_id = ts.time_slot_id AND a.status <> 'Cancelled'
+      LEFT JOIN patient p ON p.patient_id = a.patient_id
+      WHERE ($3::int IS NULL OR ds.office_id = $3)
+        AND ($4::int IS NULL OR ds.doctor_id = $4)
+        AND ($5::int IS NULL OR ds.specialty_id = $5)
+        AND ($6::text IS NULL OR ds.day_of_week = $6)
+        AND ($7::int IS NULL OR ds.shift_type_id = $7)
+    )
+  `;
+
+  const summary = await pool.query(
+    `${slots}
+    SELECT
+      count(*)::int AS offered,
+      count(appointment_id)::int AS booked,
+      count(*) FILTER (WHERE status = 'Completed')::int AS completed,
+      count(*) FILTER (WHERE status = 'No Show')::int AS "noShows",
+      to_char(min(start_time), 'HH24:MI') AS "firstTime",
+      to_char(max(end_time), 'HH24:MI') AS "lastTime"
+    FROM slots`,
+    params
+  );
+
+  const days = await pool.query(
+    `${slots}
+    SELECT to_char(day, 'YYYY-MM-DD') AS date, count(*)::int AS offered, count(appointment_id)::int AS booked
+    FROM slots
+    GROUP BY day
+    ORDER BY day`,
+    params
+  );
+
+  const appointments = await pool.query(
+    `${slots}
+    SELECT
+      appointment_id AS "appointmentId",
+      to_char(day, 'YYYY-MM-DD') AS date,
+      to_char(start_time, 'HH24:MI') AS time,
+      to_char(end_time, 'HH24:MI') AS "endTime",
+      doctor_name AS "doctorName",
+      office_name AS "officeName",
+      specialty_name AS specialty,
+      patient_name AS "patientName",
+      status
+    FROM slots
+    WHERE appointment_id IS NOT NULL
+    ORDER BY day, start_time, doctor_name`,
+    params
+  );
+
+  res.json({ summary: summary.rows[0], days: days.rows, appointments: appointments.rows });
+});
+
+// one doctor's slots for the calendar page, using the same filters as the report
+adminDataReportsRouter.get("/data-reports/schedule-utilization/doctors/:doctorId", async (req, res) => {
+  const doctorId = z.coerce.number().int().positive().parse(req.params.doctorId);
+  const q = utilizationQuery.parse(req.query);
+
+  const doctor = await pool.query(`SELECT first_name || ' ' || last_name AS name FROM employee WHERE employee_id = $1`, [doctorId]);
+  if (!doctor.rowCount) throw new HttpError(404, "Doctor not found");
+
+  // every slot the doctor's schedule offers, with the appointment in it if any
+  const slots = await pool.query(
+    `
+    SELECT
+      to_char(d.day, 'YYYY-MM-DD') AS date,
+      to_char(ts.start_time, 'HH24:MI') AS time,
+      to_char(ts.end_time, 'HH24:MI') AS "endTime",
+      o.name AS "officeName",
+      sp.name AS specialty,
+      a.appointment_id AS "appointmentId",
+      a.status,
+      p.first_name || ' ' || p.last_name AS "patientName"
+    FROM generate_series($1::date, $2::date, interval '1 day') d(day)
+    JOIN doctor_schedule ds ON ds.is_active AND ds.day_of_week = to_char(d.day, 'FMDay')
+    JOIN office o ON o.office_id = ds.office_id
+    JOIN specialty sp ON sp.specialty_id = ds.specialty_id
+    JOIN time_slot ts ON ts.shift_type_id = ds.shift_type_id AND ts.is_active
+    LEFT JOIN appointment a ON a.doctor_id = ds.doctor_id AND a.appointment_date = d.day::date
+      AND a.time_slot_id = ts.time_slot_id AND a.status <> 'Cancelled'
+    LEFT JOIN patient p ON p.patient_id = a.patient_id
+    WHERE ds.doctor_id = $3
+      AND ($4::int IS NULL OR ds.office_id = $4)
+      AND ($5::int IS NULL OR ds.specialty_id = $5)
+      AND ($6::text IS NULL OR ds.day_of_week = $6)
+      AND ($7::int IS NULL OR ds.shift_type_id = $7)
+    ORDER BY d.day, ts.start_time
+    `,
+    [q.from, q.to, doctorId, q.officeId ?? null, q.specialtyId ?? null, q.dayOfWeek ?? null, q.shiftTypeId ?? null]
+  );
+
+  res.json({ doctorName: doctor.rows[0].name, slots: slots.rows });
 });

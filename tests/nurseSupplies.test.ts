@@ -245,6 +245,47 @@ describe("supply orders", () => {
     assert.equal(await onHand(stock.syringes), before + 10 + 5 - 3);
   });
 
+  test("an order is 1 to 10,000 units, and very large old orders don't break the list or the stock", async () => {
+    const tape = await addSupply("Paper Tape", (await app.db.query(`SELECT supply_type_id AS id FROM supply_type WHERE type_name = 'Medical'`)).rows[0].id);
+    const orders = async () => (await app.db.query(`SELECT count(*)::int AS n FROM supply_order WHERE supply_id = $1`, [tape])).rows[0].n;
+
+    const smallest = await order(nina, { supplyId: tape, quantity: 1 });
+    const largest = await order(nina, { supplyId: tape, quantity: 10000 });
+    const typed = await order(nina, { supplyId: tape, quantity: "25" });
+    assert.deepEqual([smallest.status, largest.status, typed.status], [201, 201, 201]);
+    assert.deepEqual([smallest.body.quantityOrdered, largest.body.quantityOrdered, typed.body.quantityOrdered], [1, 10000, 25]);
+
+    const before = await orders();
+    const tooMany = await order(nina, { supplyId: tape, quantity: 10001 });
+    assert.deepEqual([tooMany.status, tooMany.body.error], [400, "You can order up to 10,000 at a time"]);
+    for (const quantity of [100000000, 0, -5, 2.5, "abc"]) {
+      assert.equal((await order(nina, { supplyId: tape, quantity })).status, 400, String(quantity));
+    }
+    assert.equal(await orders(), before);
+
+    // orders from before the limit can still be this big, so the totals have to fit
+    const shelf = await addStock(tape, ids.westsideOffice, 2000000000, 0);
+    const old = await app.db.query(
+      `INSERT INTO supply_order (supply_id, office_id, employee_id, quantity_ordered, status) VALUES ($1, $2, $3, 2000000000, 'Pending'), ($1, $2, $3, 2000000000, 'Ordered') RETURNING supply_order_id AS id`,
+      [tape, ids.westsideOffice, ids.nurse]
+    );
+    const list = await nina.get("/api/nurse/supplies");
+    assert.equal(list.status, 200);
+    assert.equal(list.body.find((s: { officeSupplyId: number }) => s.officeSupplyId === shelf).onOrder, 2147483647);
+
+    // receiving one would go past what the stock column holds, so the request is refused and nothing changes
+    const huge = old.rows[0].id;
+    const refused = await nina.patch(`/api/nurse/supply-orders/${huge}/receive`);
+    assert.deepEqual([refused.status, refused.body.error], [409, "This order is too large to add to your office stock. Cancel it and order a smaller amount."]);
+    assert.equal((await app.db.query(`SELECT status FROM supply_order WHERE supply_order_id = $1`, [huge])).rows[0].status, "Pending");
+    assert.equal(await onHand(shelf), 2000000000);
+    assert.equal((await nina.patch(`/api/nurse/supply-orders/${huge}/cancel`)).status, 200);
+
+    // a normal order still adds to the same stock
+    assert.equal((await nina.patch(`/api/nurse/supply-orders/${smallest.body.supplyOrderId}/receive`)).status, 200);
+    assert.equal(await onHand(shelf), 2000000001);
+  });
+
   test("a receive that can't save the stock leaves the order open", async () => {
     const pending = (await order(nina, { supplyId: supply.wipes, quantity: 8 })).body;
     const before = await onHand(stock.gauze);
