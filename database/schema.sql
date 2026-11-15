@@ -276,6 +276,28 @@ $$;
 
 
 --
+-- Name: check_doctor_deactivation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.check_doctor_deactivation() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+BEGIN
+    -- past Scheduled ones count too, since they're about to become No Show and be billed under this doctor
+    IF OLD.is_active AND NOT NEW.is_active AND EXISTS (
+        SELECT 1 FROM public.appointment
+        WHERE doctor_id = NEW.employee_id
+          AND status = 'Scheduled'
+    ) THEN
+        RAISE EXCEPTION 'This doctor still has upcoming appointments. Reschedule or cancel them first.';
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+
+--
 -- Name: check_invoice_change(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -563,6 +585,55 @@ BEGIN
             DELETE FROM public.invoice_item WHERE invoice_id = visit_invoice AND lab_order_id = NEW.lab_order_id;
         END IF;
     END IF;
+    RETURN NULL;
+END;
+$$;
+
+
+--
+-- Name: no_show_fee(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.no_show_fee() RETURNS trigger
+    LANGUAGE plpgsql
+    SET search_path TO ''
+    AS $$
+DECLARE
+    fee record;
+    new_invoice integer;
+    no_employee boolean := COALESCE(current_setting('app.employee_id', true), '') = '';
+    old_reason text := current_setting('app.reason', true);
+BEGIN
+    -- only when the appointment just became No Show
+    IF NEW.status <> 'No Show' OR OLD.status = 'No Show' THEN
+        RETURN NULL;
+    END IF;
+
+    -- the price the admin set (nothing is billed while it's off or $0)
+    SELECT fee_id, name, price INTO fee FROM public.service_fee WHERE category = 'No Show' AND is_active;
+    IF fee IS NULL OR fee.price <= 0 THEN
+        RETURN NULL;
+    END IF;
+
+    -- the automatic no show job has no employee, so the fee is recorded under the doctor
+    IF no_employee THEN
+        PERFORM set_config('app.employee_id', NEW.doctor_id::text, true);
+    END IF;
+    PERFORM set_config('app.reason', 'No-show fee', true);
+
+    INSERT INTO public.invoice (patient_id, appointment_id, amount, issue_date, status)
+    VALUES (NEW.patient_id, NEW.appointment_id, 0, NEW.appointment_date, 'Pending')
+    RETURNING invoice_id INTO new_invoice;
+
+    -- the invoice total trigger turns the amount into the fee
+    INSERT INTO public.invoice_item (invoice_id, fee_id, category, description, price)
+    VALUES (new_invoice, fee.fee_id, 'No Show', fee.name, fee.price);
+
+    -- put things back for the next appointment in the same update
+    IF no_employee THEN
+        PERFORM set_config('app.employee_id', '', true);
+    END IF;
+    PERFORM set_config('app.reason', COALESCE(old_reason, ''), true);
     RETURN NULL;
 END;
 $$;
@@ -1397,7 +1468,7 @@ CREATE TABLE public.invoice_item (
     lab_order_id integer,
     prescription_item_id integer,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT chk_invoice_item_category CHECK (((category)::text = ANY ((ARRAY['Visit'::character varying, 'Lab Test'::character varying, 'Medication'::character varying])::text[]))),
+    CONSTRAINT chk_invoice_item_category CHECK (((category)::text = ANY ((ARRAY['Visit'::character varying, 'Lab Test'::character varying, 'Medication'::character varying, 'No Show'::character varying])::text[]))),
     CONSTRAINT chk_invoice_item_price CHECK ((price >= (0)::numeric))
 );
 
@@ -1882,8 +1953,8 @@ CREATE TABLE public.service_fee (
     medication_id integer,
     is_active boolean DEFAULT true NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT chk_service_fee_category CHECK (((category)::text = ANY ((ARRAY['Visit'::character varying, 'Lab Test'::character varying, 'Medication'::character varying])::text[]))),
-    CONSTRAINT chk_service_fee_link CHECK (((((category)::text = 'Visit'::text) AND (specialty_id IS NOT NULL) AND (lab_test_type_id IS NULL) AND (medication_id IS NULL)) OR (((category)::text = 'Lab Test'::text) AND (lab_test_type_id IS NOT NULL) AND (specialty_id IS NULL) AND (medication_id IS NULL)) OR (((category)::text = 'Medication'::text) AND (medication_id IS NOT NULL) AND (specialty_id IS NULL) AND (lab_test_type_id IS NULL)))),
+    CONSTRAINT chk_service_fee_category CHECK (((category)::text = ANY ((ARRAY['Visit'::character varying, 'Lab Test'::character varying, 'Medication'::character varying, 'No Show'::character varying])::text[]))),
+    CONSTRAINT chk_service_fee_link CHECK (((((category)::text = 'Visit'::text) AND (specialty_id IS NOT NULL) AND (lab_test_type_id IS NULL) AND (medication_id IS NULL)) OR (((category)::text = 'Lab Test'::text) AND (lab_test_type_id IS NOT NULL) AND (specialty_id IS NULL) AND (medication_id IS NULL)) OR (((category)::text = 'Medication'::text) AND (medication_id IS NOT NULL) AND (specialty_id IS NULL) AND (lab_test_type_id IS NULL)) OR (((category)::text = 'No Show'::text) AND (specialty_id IS NULL) AND (lab_test_type_id IS NULL) AND (medication_id IS NULL)))),
     CONSTRAINT chk_service_fee_price CHECK ((price >= (0)::numeric))
 );
 
@@ -2766,6 +2837,13 @@ CREATE UNIQUE INDEX service_fee_one_per_medication ON public.service_fee USING b
 
 
 --
+-- Name: service_fee_one_no_show; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX service_fee_one_no_show ON public.service_fee USING btree (category) WHERE ((category)::text = 'No Show'::text);
+
+
+--
 -- Name: service_fee_one_per_specialty; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2794,6 +2872,13 @@ CREATE TRIGGER appointment_invoice_trigger AFTER UPDATE OF status ON public.appo
 
 
 --
+-- Name: appointment appointment_no_show_fee_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER appointment_no_show_fee_trigger AFTER UPDATE OF status ON public.appointment FOR EACH ROW EXECUTE FUNCTION public.no_show_fee();
+
+
+--
 -- Name: appointment appointment_primary_doctor_trigger; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -2812,6 +2897,13 @@ CREATE TRIGGER appointment_referral_check_trigger BEFORE INSERT OR UPDATE ON pub
 --
 
 CREATE TRIGGER employee_audit_trigger AFTER UPDATE OF is_active, employee_type_id, office_id ON public.employee FOR EACH ROW EXECUTE FUNCTION public.record_employee_changes();
+
+
+--
+-- Name: employee employee_deactivation_check_trigger; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER employee_deactivation_check_trigger BEFORE UPDATE OF is_active ON public.employee FOR EACH ROW EXECUTE FUNCTION public.check_doctor_deactivation();
 
 
 --
