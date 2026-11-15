@@ -2,7 +2,7 @@
 
 This folder has the SQL for the Medical Clinic database. The live PostgreSQL database is hosted on Supabase.
 
-- `schema.sql` is a snapshot of the live database structure (all 46 tables with their relationships, constraints, triggers and trigger functions, no patient or employee records). It includes every migration through 021.
+- `schema.sql` is a snapshot of the live database structure (all 46 tables with their relationships, constraints, triggers and trigger functions, no patient or employee records). It includes every migration through 023. The no-show fee row from 023 is data, so it isn't in `schema.sql`.
 - `seed.sql` is for fictional sample data. It's empty right now.
 - `migrations/` has the SQL scripts for database changes.
 
@@ -35,19 +35,23 @@ All migrations below are applied to the shared Supabase database. Don't run them
 | 019 `referral_primary_approval` | Referrals need a reason and are approved or denied (with a reason) by the patient's primary doctor (trigger) |
 | 020 `one_vitals_per_visit` | Each visit has at most one vitals row; saving again updates it |
 | 021 `follow_up_lab_billing` | A lab test ordered after a visit's invoice is paid is added to it, reopening it as Pending with the new balance (trigger) |
+| 022 `doctor_and_no_show_triggers` | A doctor with any Scheduled appointment can't be deactivated; a new No Show gets an invoice with a $25 no-show fee (triggers) |
+| 023 `no_show_fee_price` | The no-show fee is a `service_fee` row (starts at $25) that admins can change or turn off on Billing > Fees; the trigger bills that price |
 
 ## Triggers
 
-The database has 16 triggers:
+The database has 18 triggers:
 
 | Table | Trigger | What it enforces |
 | --- | --- | --- |
 | `appointment` | `appointment_conflict_trigger` | No overlapping appointments for the same doctor or patient |
 | `appointment` | `appointment_history_trigger` | Records every new appointment and change, and who made it |
 | `appointment` | `appointment_invoice_trigger` | Checking out creates the visit's invoice |
+| `appointment` | `appointment_no_show_fee_trigger` | A new No Show gets an invoice for the no-show fee set on Billing > Fees, unless it's off or $0 (recorded under the doctor when the automatic job marks it) |
 | `appointment` | `appointment_primary_doctor_trigger` | First completed Family or Internal Medicine visit sets the primary doctor |
 | `appointment` | `appointment_referral_check_trigger` | Specialist visits must use an approved referral, valid on the visit date |
 | `employee` | `employee_audit_trigger` | Records changes to an employee's status, type and office |
+| `employee` | `employee_deactivation_check_trigger` | A doctor with any Scheduled appointment can't be deactivated (past ones count, since they're about to become No Show and be billed under that doctor) |
 | `invoice` | `invoice_check_trigger` | Invoices can't be deleted or changed once Void, and every change says who made it |
 | `invoice` | `invoice_history_trigger` | Records invoice status changes in `billing_history` |
 | `invoice_item` | `invoice_item_total_trigger` | Keeps the invoice total equal to its lines, then lets insurance pay |
@@ -59,7 +63,7 @@ The database has 16 triggers:
 | `insurance` | `insurance_verified_trigger` | Verifying insurance pays the patient's unpaid invoices |
 | `referral` | `referral_check_trigger` | Referrals need a reason, go to the primary doctor, and only that doctor approves or denies (denials need a reason) |
 
-Appointments whose time passes without a check-in become No Show automatically, but that's done by the backend (`src/middleware/markNoShows.ts`), not a trigger, because a trigger can't run on a timer.
+Appointments whose time passes without a check-in become No Show automatically, but that's done by the backend (`src/middleware/markNoShows.ts`), not a trigger, because a trigger can't run on a timer. Once it's marked, `appointment_no_show_fee_trigger` bills the fee.
 
 ## Adding a migration
 

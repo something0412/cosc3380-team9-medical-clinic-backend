@@ -22,6 +22,9 @@ INSERT INTO service_fee (category, type, name, price, specialty_id) VALUES
   ('Visit', 'Primary Care', 'Family Medicine visit', 150.00, 1),
   ('Visit', 'Specialist', 'Cardiology visit', 275.00, 2);
 
+-- the no-show fee from migration 023
+INSERT INTO service_fee (category, name, price) VALUES ('No Show', 'No-show fee', 25.00);
+
 -- shift 1 is Morning
 INSERT INTO shift_type (name, start_time, end_time) VALUES ('Morning', '08:00', '12:00');
 

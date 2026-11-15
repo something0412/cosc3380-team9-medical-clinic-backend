@@ -215,12 +215,13 @@ describe("employee audit trigger", () => {
     const client = await app.db.connect();
     try {
       await client.query("BEGIN");
-      await client.query(`UPDATE employee SET is_active = false WHERE employee_id = $1`, [ids.doctor]);
+      // the doctor has appointments by now, so this uses the admin
+      await client.query(`UPDATE employee SET is_active = false WHERE employee_id = $1`, [ids.admin]);
       await client.query("ROLLBACK");
     } finally {
       client.release();
     }
-    assert.deepEqual(await audit(ids.doctor), []);
+    assert.deepEqual(await audit(ids.admin), []);
   });
 
   test("the audit tables hold no personal details", async () => {
@@ -278,6 +279,152 @@ describe("employee audit trigger", () => {
     } finally {
       await client.query("ROLLBACK");
       client.release();
+    }
+  });
+});
+
+// a new doctor with no appointments yet
+async function newDoctor(name: string, phone: string) {
+  const { rows } = await app.db.query(
+    `INSERT INTO employee (first_name, last_name, dob, employee_type_id, phone, email, office_id) VALUES ($1, 'Doc', '1980-01-01', 2, $2, $3, 1) RETURNING employee_id`,
+    [name, phone, `${name.toLowerCase()}@test.org`]
+  );
+  const id = rows[0].employee_id as number;
+  await app.db.query(
+    `INSERT INTO doctor (employee_id, license_number, license_issuing_state, license_expiration_date, npi_number) VALUES ($1, $2, 'TX', '2030-01-01', $3)`,
+    [id, `TX-${name}`, `30000000${String(id).padStart(2, "0")}`]
+  );
+  await app.db.query(`INSERT INTO doctor_specialty (doctor_id, specialty_id, is_primary) VALUES ($1, 1, true)`, [id]);
+  return id;
+}
+
+const deactivate = (employeeId: number) => app.db.query(`UPDATE employee SET is_active = false WHERE employee_id = $1`, [employeeId]);
+
+describe("doctor deactivation trigger", () => {
+  test("a doctor with a scheduled appointment ahead can't be deactivated", async () => {
+    const doctor = await newDoctor("Ada", "7135558001");
+    const id = await insertAppointment({ patientId: OLIVE, doctorId: doctor, date: await freshDate(), timeSlotId: 1 });
+    await assert.rejects(deactivate(doctor), /This doctor still has upcoming appointments/);
+
+    // once it's cancelled the doctor can go
+    await app.db.query(`UPDATE appointment SET status = 'Cancelled' WHERE appointment_id = $1`, [id]);
+    await deactivate(doctor);
+    assert.equal((await app.db.query(`SELECT is_active FROM employee WHERE employee_id = $1`, [doctor])).rows[0].is_active, false);
+  });
+
+  test("a past appointment still waiting to become No Show blocks it too", async () => {
+    const doctor = await newDoctor("Bea", "7135558002");
+    await app.db.query(
+      `INSERT INTO appointment (patient_id, doctor_id, office_id, appointment_date, time_slot_id, specialty_id, booking_channel) VALUES ($1, $2, 1, CURRENT_DATE - 3, 1, 1, 'Web')`,
+      [OLIVE, doctor]
+    );
+    await assert.rejects(deactivate(doctor), /This doctor still has upcoming appointments/);
+  });
+
+  test("finished, missed and cancelled appointments don't block it", async () => {
+    const doctor = await newDoctor("Cal", "7135558003");
+    for (const [days, status] of [[-5, "Completed"], [-6, "No Show"], [40, "Cancelled"]] as const) {
+      await app.db.query(
+        `INSERT INTO appointment (patient_id, doctor_id, office_id, appointment_date, time_slot_id, specialty_id, status, booking_channel) VALUES ($1, $2, 1, CURRENT_DATE + $3::int, 1, 1, $4, 'Web')`,
+        [OLIVE, doctor, days, status]
+      );
+    }
+    await deactivate(doctor);
+  });
+
+  test("other employees and other changes aren't affected", async () => {
+    await app.db.query(`UPDATE employee SET is_active = false WHERE employee_id = $1`, [ids.nurse]);
+    await app.db.query(`UPDATE employee SET is_active = true WHERE employee_id = $1`, [ids.nurse]);
+    // the booked doctor can still be edited, just not deactivated
+    await app.db.query(`UPDATE employee SET phone = phone, is_active = true WHERE employee_id = $1`, [ids.doctor]);
+  });
+});
+
+// the no-show invoice for an appointment, with its one line and who billed it
+async function noShowBill(appointmentId: number) {
+  const { rows } = await app.db.query(
+    `
+    SELECT i.status, i.amount::text AS amount, to_char(i.issue_date, 'YYYY-MM-DD') AS issued,
+      (SELECT json_agg(json_build_object('category', category, 'description', description, 'price', price::text)) FROM invoice_item WHERE invoice_id = i.invoice_id) AS lines,
+      (SELECT changed_by FROM billing_history WHERE invoice_id = i.invoice_id AND old_status IS NULL) AS billed_by,
+      (SELECT reason FROM billing_history WHERE invoice_id = i.invoice_id AND old_status IS NULL) AS reason
+    FROM invoice i WHERE i.appointment_id = $1
+    `,
+    [appointmentId]
+  );
+  return rows;
+}
+
+describe("no-show fee trigger", () => {
+  test("the automatic job's No Show bills $25 under the doctor", async () => {
+    const date = await freshDate();
+    const id = await insertAppointment({ patientId: OLIVE, date, timeSlotId: 1 });
+    // no employee set, like markNoShows
+    await app.db.query(`UPDATE appointment SET status = 'No Show' WHERE appointment_id = $1`, [id]);
+    assert.deepEqual(await noShowBill(id), [
+      {
+        status: "Pending",
+        amount: "25.00",
+        issued: date,
+        lines: [{ category: "No Show", description: "No-show fee", price: "25.00" }],
+        billed_by: ids.doctor,
+        reason: "No-show fee",
+      },
+    ]);
+    // the appointment history still shows no employee
+    const who = await app.db.query(`SELECT changed_by FROM appointment_history WHERE appointment_id = $1 AND new_status = 'No Show'`, [id]);
+    assert.deepEqual(who.rows, [{ changed_by: null }]);
+  });
+
+  test("one update over several doctors bills each under their own doctor", async () => {
+    const date = await freshDate();
+    const first = await insertAppointment({ patientId: OLIVE, date, timeSlotId: 1 });
+    const second = await insertAppointment({ doctorId: FAY, date, timeSlotId: 2 });
+    await app.db.query(`UPDATE appointment SET status = 'No Show' WHERE appointment_id IN ($1, $2)`, [first, second]);
+    assert.equal((await noShowBill(first))[0].billed_by, ids.doctor);
+    assert.equal((await noShowBill(second))[0].billed_by, FAY);
+  });
+
+  test("a receptionist's No Show is billed under the receptionist", async () => {
+    const id = await insertAppointment({ patientId: OLIVE, date: await freshDate(), timeSlotId: 1 });
+    await asEmployee(app.db, ids.receptionist, (client) => client.query(`UPDATE appointment SET status = 'No Show' WHERE appointment_id = $1`, [id]));
+    const [bill] = await noShowBill(id);
+    assert.deepEqual([bill.amount, bill.billed_by, bill.reason], ["25.00", ids.receptionist, "No-show fee"]);
+  });
+
+  test("only a change to No Show bills, and only once", async () => {
+    const date = await freshDate();
+    const inserted = await insertAppointment({ patientId: OLIVE, date, timeSlotId: 1, status: "No Show" });
+    const cancelled = await insertAppointment({ patientId: OLIVE, date, timeSlotId: 2 });
+    await app.db.query(`UPDATE appointment SET status = 'Cancelled' WHERE appointment_id = $1`, [cancelled]);
+    await app.db.query(`UPDATE appointment SET status = 'No Show' WHERE appointment_id = $1`, [inserted]);
+    assert.deepEqual(await noShowBill(inserted), []);
+    assert.deepEqual(await noShowBill(cancelled), []);
+  });
+
+  test("the admin sets the no-show fee on the Fees page, and turning it off stops billing", async () => {
+    const fees = (await admin.get("/api/admin/fees")).body as { feeId: number; category: string; name: string; price: string; isActive: boolean }[];
+    const fee = fees.find((f) => f.category === "No Show");
+    assert.deepEqual([fee?.name, fee?.price, fee?.isActive], ["No-show fee", "25.00", true]);
+    const save = (price: string, isActive: boolean) => admin.put(`/api/admin/fees/${fee!.feeId}`, { price, type: null, isActive });
+    const missed = async () => {
+      const id = await insertAppointment({ patientId: OLIVE, date: await freshDate(), timeSlotId: 1 });
+      await app.db.query(`UPDATE appointment SET status = 'No Show' WHERE appointment_id = $1`, [id]);
+      return noShowBill(id);
+    };
+
+    try {
+      assert.equal((await save("40.00", true)).status, 200);
+      const [bill] = await missed();
+      assert.deepEqual([bill.amount, bill.lines], ["40.00", [{ category: "No Show", description: "No-show fee", price: "40.00" }]]);
+
+      assert.equal((await save("40.00", false)).status, 200);
+      assert.deepEqual(await missed(), []);
+
+      // prices must be more than $0
+      assert.equal((await save("0.00", true)).status, 400);
+    } finally {
+      await save("25.00", true);
     }
   });
 });
