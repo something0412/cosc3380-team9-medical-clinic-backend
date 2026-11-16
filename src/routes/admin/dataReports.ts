@@ -77,7 +77,7 @@ adminDataReportsRouter.get("/data-reports/options", async (_req, res) => {
   });
 });
 
-// missed appointments: where no-shows and cancellations come from
+// missed appointments: where no shows and cancellations come from
 adminDataReportsRouter.get("/data-reports/missed-appointments", async (req, res) => {
   const q = missedQuery.parse(req.query);
   const params = [q.from, q.to, q.officeId ?? null, q.doctorId ?? null, q.specialtyId ?? null, q.channel ?? null, q.patient];
@@ -181,7 +181,7 @@ adminDataReportsRouter.get("/data-reports/missed-appointments", async (req, res)
     params
   );
 
-  // every appointment behind the counts, for the details pop-up on each group row
+  // every appointment behind the counts, for the details popup on each group row
   const appointments = await pool.query(
     `${visits}
     SELECT
@@ -321,7 +321,7 @@ adminDataReportsRouter.get("/data-reports/unpaid-balances", async (req, res) => 
     [...unpaidParams, q.minBalance]
   );
 
-  // each unpaid invoice, for the pop-up on each patient row
+  // each unpaid invoice, for the popup on each patient row
   const unpaidInvoices = await pool.query(
     `${bills}
     SELECT
@@ -436,7 +436,7 @@ adminDataReportsRouter.get("/data-reports/schedule-utilization", async (req, res
   res.json({ summary: summary.rows[0], doctors: doctors.rows, days: days.rows });
 });
 
-// every doctor's booked appointments for the all-doctors calendar page, plus offered and booked counts per day
+// every doctor's booked appointments for the calendar page with every doctor, plus offered and booked counts per day
 adminDataReportsRouter.get("/data-reports/schedule-utilization/calendar", async (req, res) => {
   const q = utilizationQuery.parse(req.query);
   const params = [q.from, q.to, q.officeId ?? null, q.doctorId ?? null, q.specialtyId ?? null, q.dayOfWeek ?? null, q.shiftTypeId ?? null];

@@ -266,7 +266,9 @@ describe("invoices made at check out", () => {
     for (const status of ["Cancelled", "No Show"]) {
       const appointmentId = await visit("Scheduled");
       await asEmployee(app.db, ids.admin, (client) => client.query(`UPDATE appointment SET status = $2 WHERE appointment_id = $1`, [appointmentId, status]));
-      assert.equal(await openInvoiceOf(appointmentId), undefined, status);
+      // a No Show only gets the no show fee, never the visit's charges
+      const lines = await app.db.query(`SELECT ii.category, ii.price::text AS price FROM invoice_item ii JOIN invoice i ON i.invoice_id = ii.invoice_id WHERE i.appointment_id = $1`, [appointmentId]);
+      assert.deepEqual(lines.rows, status === "No Show" ? [{ category: "No Show", price: "25.00" }] : [], status);
       assert.equal((await checkOut(appointmentId)).status, 409, status);
     }
     daysAhead += 1;
@@ -782,8 +784,13 @@ describe("admin billing lists", () => {
           OR (SELECT count(*) FROM invoice i WHERE i.appointment_id = a.appointment_id AND i.status <> 'Void') > 1)
     `);
     assert.deepEqual(rows, [], "a checked out visit with no invoice or more than one open one");
-    const notCompleted = await app.db.query(`SELECT 1 FROM invoice i JOIN appointment a ON a.appointment_id = i.appointment_id WHERE a.status IN ('Scheduled', 'Cancelled', 'No Show')`);
+    const notCompleted = await app.db.query(`SELECT 1 FROM invoice i JOIN appointment a ON a.appointment_id = i.appointment_id WHERE a.status IN ('Scheduled', 'Cancelled')`);
     assert.equal(notCompleted.rowCount, 0, "an invoice for a visit that wasn't completed");
+    // a No Show's invoice only holds the no show fee
+    const noShowCharges = await app.db.query(`
+      SELECT 1 FROM invoice_item ii JOIN invoice i ON i.invoice_id = ii.invoice_id JOIN appointment a ON a.appointment_id = i.appointment_id
+      WHERE (a.status = 'No Show') <> (ii.category = 'No Show')`);
+    assert.equal(noShowCharges.rowCount, 0, "a visit charge on a No Show, or a no-show fee on a visit");
 
     assert.deepEqual((await admin.get("/api/admin/payment-types")).body, [
       { paymentTypeId: cashId, name: "Cash" },

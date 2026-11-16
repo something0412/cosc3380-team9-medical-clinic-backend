@@ -382,7 +382,14 @@ describe("visit summaries", () => {
 
   test("a doctor deactivated while saving can't finish the summary", async () => {
     const { appointmentId } = await checkedInToday(doraId, slots.allDay);
-    const res = await whileHeld(`UPDATE employee SET is_active = false WHERE employee_id = $1`, doraId, () => summary(dora, appointmentId, { notes: "almost" }));
+    // the deactivation trigger refuses a doctor with a visit in progress, so it's off here to test the app's own check
+    await app.db.query(`ALTER TABLE employee DISABLE TRIGGER employee_deactivation_check_trigger`);
+    let res;
+    try {
+      res = await whileHeld(`UPDATE employee SET is_active = false WHERE employee_id = $1`, doraId, () => summary(dora, appointmentId, { notes: "almost" }));
+    } finally {
+      await app.db.query(`ALTER TABLE employee ENABLE TRIGGER employee_deactivation_check_trigger`);
+    }
     await app.db.query(`UPDATE employee SET is_active = true WHERE employee_id = $1`, [doraId]);
     dora = await app.loginStaff(doraId);
     assert.deepEqual([res.status, res.body.error], [403, "Your account is no longer active"]);
