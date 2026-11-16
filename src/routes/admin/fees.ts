@@ -24,7 +24,7 @@ const itemBody = z.object({
   type: typeText,
 });
 
-// get every specialty, lab test, and medication with its price (feeId is null when it has no price yet), plus the no-show fee
+// get every specialty, lab test, and medication with its price (feeId is null when it has no price yet), plus the no show fee
 adminFeesRouter.get("/", async (_req, res) => {
   // get each priced item with its fee, plus the ones still missing a fee
   const result = await pool.query(`
@@ -51,7 +51,7 @@ adminFeesRouter.get("/", async (_req, res) => {
     FROM medication m
     LEFT JOIN service_fee f ON f.medication_id = m.medication_id
     UNION ALL
-    -- the one no-show fee, billed when a patient misses an appointment
+    -- the one no show fee, billed when a patient misses an appointment
     SELECT f.fee_id, 'No Show', NULL, f.name, f.type, f.price, f.is_active, true,
       to_char(f.updated_at AT TIME ZONE 'America/Chicago', 'YYYY-MM-DD HH24:MI')
     FROM service_fee f

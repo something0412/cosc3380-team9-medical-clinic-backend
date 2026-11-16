@@ -340,7 +340,7 @@ describe("doctor deactivation trigger", () => {
   });
 });
 
-// the no-show invoice for an appointment, with its one line and who billed it
+// the no show invoice for an appointment, with its one line and who billed it
 async function noShowBill(appointmentId: number) {
   const { rows } = await app.db.query(
     `

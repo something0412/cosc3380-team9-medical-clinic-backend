@@ -16,7 +16,7 @@ const listQuery = z.object({
   status: z.enum(["all", "open", "Ordered", "InProgress", "Completed", "Cancelled"], "Status must be all, open, Ordered, InProgress, Completed or Cancelled").default("all"),
   search: z.string().trim().max(100).default(""),
 });
-// every lab order belongs to a visit, including follow-up orders after the visit
+// every lab order belongs to a visit, including orders added after the visit
 const orderBody = z.object({
   patientId: id("a patient"),
   labTestTypeId: id("a lab test"),

@@ -91,7 +91,7 @@ doctorAppointmentsRouter.get("/api/doctor/appointments/:id", async (req, res) =>
   const appointment = await getAppointment(pool, id("an appointment").parse(req.params.id));
   if (!appointment || appointment.doctorId !== doctor.employeeId) throw new HttpError(404, "Appointment not found");
 
-  // every lab test ordered for this visit, including follow-ups after it
+  // every lab test ordered for this visit, including ones added after it
   const labOrders = await pool.query(
     `SELECT ${LAB_ORDER_COLUMNS} FROM lab_order l ${LAB_ORDER_JOINS} WHERE l.appointment_id = $1 ORDER BY l.order_date, l.lab_order_id`,
     [appointment.appointmentId]
