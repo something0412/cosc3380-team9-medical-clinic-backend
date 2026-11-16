@@ -6,7 +6,10 @@ Tests must never run against the shared Supabase database. They only use `TEST_D
 
 ## What's covered
 
+There are 502 tests in 29 files.
+
 - `auth.test.ts` covers staff and patient login, logout, inactive and disabled logins, and Admin only access for every Admin endpoint.
+- `unifiedLogin.test.ts` covers the one email and password login page for every role, emails that ignore case and spaces, inactive or disabled logins, an email shared by two accounts, and keeping each email on one account only.
 - `admin/employeeManagement.test.ts` covers the Staff page using the same employee rules, partial edits, deactivation with upcoming appointments, office moves, role changes, specialties, requests at the same time, and Admin only access.
 - `admin/employees.test.ts` covers the employee directory, creating and editing employees, doctor and nurse details, and account management.
 - `admin/offices.test.ts` covers the office directory, creating and editing offices, validation, and activation rules.
@@ -24,7 +27,7 @@ Tests must never run against the shared Supabase database. They only use `TEST_D
 - `workflows.test.ts` follows one patient from sign up through booking, check in, vitals, the doctor's notes, a lab result, a referral, and a paid bill, and checks that every role sees the same records.
 - `nurseSupplies.test.ts` covers office stock, using supplies, ordering and receiving, requests at the same time, rollback, and nurse only access.
 - `nurseLabClinical.test.ts` covers which visits a nurse can open and edit, vitals, nursing notes, allergies and home medications for doctors and nurses, lab processing and results, and requests at the same time.
-- `triggers.test.ts` covers the appointment history, employee audit, and appointment conflict triggers, plus row level security on the audit tables.
+- `triggers.test.ts` covers the appointment history, employee audit, appointment conflict, doctor deactivation and no show fee triggers, plus row level security on the audit tables.
 - `profiles.test.ts` covers patient and staff profile updates, emergency contacts, insurance, certificates, password rules, ownership checks, and registration of every patient and staff route.
 - `sessions.test.ts` covers ending sessions for deactivated, disabled, and deleted accounts, and checks that role, staff type, and office changes apply on the next request.
 - `staffRoles.test.ts` covers lab technician sign in, sessions, role changes, and limits, and checks that the doctor, lab, nurse, and receptionist portals follow the database.
@@ -37,15 +40,15 @@ Tests must never run against the shared Supabase database. They only use `TEST_D
 
 ## Setup
 
-You need Node.js 22 and a local PostgreSQL server.
+You need Node.js 22.13 or newer and a local PostgreSQL server. Use a separate database for the tests, not the `lambda_clinic` database from the dump, because every test file wipes and rebuilds its database.
 
-1. Create an empty test database.
+1. Create an empty test database. Its name has to end in `_test`.
 
    ```bash
-   createdb cosc3380_test
+   createdb -U postgres cosc3380_test
    ```
 
-2. Add `TEST_DATABASE_URL` to your backend `.env`, which Git ignores.
+2. Set `TEST_DATABASE_URL` in your backend `.env`, which Git ignores. If you made `.env` from `.env.example`, the line is already there, so just fill in your password.
 
    ```
    TEST_DATABASE_URL=postgres://postgres:yourpassword@localhost:5432/cosc3380_test
